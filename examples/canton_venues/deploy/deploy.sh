@@ -13,7 +13,7 @@ SHA="$(git -C "$REPO" rev-parse --short "${1:-HEAD}")"
 echo "▸ release $SHA"
 git -C "$REPO" archive --format=tar "$SHA" | ssh "$SERVER" "
   set -e
-  mkdir -p /opt/canton-venues/releases/$SHA /var/www/canton-venues
+  mkdir -p /opt/canton-venues/releases/$SHA /var/www/canton-venues/api/v1
   tar xf - -C /opt/canton-venues/releases/$SHA"
 
 ssh "$SERVER" "
@@ -22,7 +22,9 @@ ssh "$SERVER" "
   test -d .venv || python3 -m venv .venv
   .venv/bin/pip install -q --upgrade \"./releases/$SHA[venues]\"
   ln -sfn releases/$SHA current
-  install -m 644 current/examples/canton_venues/site/index.html current/examples/canton_venues/site/*.png /var/www/canton-venues/
+  install -m 644 current/examples/canton_venues/site/index.html current/examples/canton_venues/site/*.png \
+    current/examples/canton_venues/site/llms.txt current/examples/canton_venues/site/robots.txt /var/www/canton-venues/
+  install -m 644 current/examples/canton_venues/site/api-index.json /var/www/canton-venues/api/v1/index.json
   install -m 644 current/examples/canton_venues/deploy/canton-venues.service current/examples/canton_venues/deploy/canton-venues-mcp.service current/examples/canton_venues/deploy/canton-venues-contact.service \
     current/examples/canton_venues/deploy/canton-venues-study.service current/examples/canton_venues/deploy/canton-venues-study.timer \
     current/examples/canton_venues/deploy/canton-venues-crosscheck.service current/examples/canton_venues/deploy/canton-venues-crosscheck.timer \

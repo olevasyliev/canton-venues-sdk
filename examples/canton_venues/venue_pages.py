@@ -2059,6 +2059,14 @@ def _write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def sitemap(all_facts: dict, t: int) -> str:
+    """The dashboard, the venues index, a page per live venue and the weekly card, for crawlers."""
+    day = datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%d")
+    urls = [f"{SITE}/", f"{SITE}/venues/"] + [f"{SITE}/venues/{s}/" for s in all_facts] + [f"{SITE}/weekly/"]
+    rows = "".join(f"  <url><loc>{u}</loc><lastmod>{day}</lastmod></url>\n" for u in urls)
+    return f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{rows}</urlset>\n'
+
+
 def build(out: Path, data: dict, t: int, cards: bool = True, look: str = "venue", guard=None,
           fresh: dict[str, int] | None = None) -> dict:
     """Write ``out/venues/<slug>/index.html`` (+ ``card.png``) and ``out/venues/index.html``.
@@ -2107,6 +2115,7 @@ def build(out: Path, data: dict, t: int, cards: bool = True, look: str = "venue"
             guard.accept(s, figs, heads[s], t)
     if all_facts:
         _write(out / "venues" / "index.html", index_page(all_facts, shown, t, card_v))
+        _write(out / "sitemap.xml", sitemap(all_facts, t))
     if guard is not None:
         guard.save()
     return heads

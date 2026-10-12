@@ -1,0 +1,56 @@
+# Canton Venues
+
+> Live, read-only market data for the trading venues on the Canton Network: the same trade compared across venues at four sizes after each venue's network fee, Canton prices against outside markets, cross-venue spreads, pools and perps. Open JSON API and an MCP server, no key, no sign-up, cross-origin enabled.
+
+Venues read: Temple, Cantex, Tradecraft, OneSwap, Pool Party, Rocky (spot and perps), Ekiden (perps). Snapshots refresh every five minutes. Nothing is signed or executed. Source: https://github.com/olevasyliev/canton-venues-sdk (open source).
+
+## JSON API
+
+Base URL: https://cantonvenues.com/api/v1/ (opening it returns this endpoint list as JSON). Every file carries `t`, the unix time of its snapshot. Amounts in USD unless a field name says otherwise.
+
+- [summary.json](https://cantonvenues.com/api/v1/summary.json): Canton Coin price, ecosystem figures, how many tokens and venues are priced
+- [tokens.json](https://cantonvenues.com/api/v1/tokens.json): every token: price, liquidity, 24h volume, 24h/7d change, the venues it trades on, 7-day sparkline
+- [execution.json](https://cantonvenues.com/api/v1/execution.json): best execution: every venue quoted at $100, $1K, $10K and $50K, both directions, net of each venue's network fee (`network_fee` documents the fee per venue and whether it was measured or assumed)
+- [premium.json](https://cantonvenues.com/api/v1/premium.json): each asset's Canton price against its outside reference (CoinGecko) or peg, overall and per venue
+- [scan.json](https://cantonvenues.com/api/v1/scan.json): every cross-venue round trip at its best size, after costs
+- [spreads.json](https://cantonvenues.com/api/v1/spreads.json): daily spread study: how long cross-venue spreads live
+- [alerts.json](https://cantonvenues.com/api/v1/alerts.json): active alerts and the feed of every alert fired (spreads, pegs, premiums)
+- [venues.json](https://cantonvenues.com/api/v1/venues.json): every Canton venue: type, 24h volume, what is read
+- [venue_history.json](https://cantonvenues.com/api/v1/venue_history.json): per venue: daily volume and hourly readings
+- [lp.json](https://cantonvenues.com/api/v1/lp.json): pools: liquidity, 24h volume, fee, fee APR
+- [pools.json](https://cantonvenues.com/api/v1/pools.json): raw pool reserves and order-book levels per venue, the inputs every quote is computed from
+- [perps.json](https://cantonvenues.com/api/v1/perps.json): perp markets on Rocky and Ekiden: price, basis, funding, spread
+- [history.json](https://cantonvenues.com/api/v1/history.json): eight days of prices and premiums in five-minute steps (large, ~1.2 MB)
+- [desk.json](https://cantonvenues.com/api/v1/desk.json): the paper desk's full record: router and arbitrage simulated on live quotes
+- [weekly.json](https://cantonvenues.com/api/v1/weekly.json): the rolling last-7-days volume card by venue and day
+
+Example: `curl -s https://cantonvenues.com/api/v1/premium.json | jq '.assets[] | {symbol, premium}'`
+
+## MCP
+
+Streamable HTTP server at https://cantonvenues.com/mcp, read-only, no key. Add it in Claude as a custom connector, or in any MCP client as a streamable HTTP server.
+
+Tools:
+- market_overview(): Canton Coin price, DEX volume and TVL, volume by venue, top movers, largest premiums, latest alerts
+- list_tokens(sort_by="liquidity", limit=30): every token; sort_by liquidity, volume, change_24h, change_7d or premium
+- token(symbol): one token: price on each venue, premium to its outside reference, its pools, 7 days of prices
+- quote(sell, buy, amount=None, amount_usd=None): price any amount on every venue from live reserves and order books, pool fees and price impact included; token-to-token routes through CC; each venue's network fee is returned separately in `network_fees`
+- premiums(kind="all"): Canton prices against outside markets and pegs; kind all, reference or peg
+- spreads(limit=10): buy-on-one-venue, sell-on-another round trips at their best size, after network cost
+- alerts(limit=20): peg breaks, premiums over 1%, hourly moves over 5%, spreads that clear their costs; newest last
+- pools(sort_by="tvl", limit=20): AMM pools with liquidity, 24h volume, fee and fee APR; sort_by tvl, volume or apr
+- venues(): every Canton venue: type, 24h volume, and whether it is priced live, volume only, or unreadable
+- perps(base=None): perp markets on Rocky and Ekiden: price, basis, funding, spread, open interest; base e.g. BTC, ETH or CC
+
+Example question: "where is CBTC cheapest for $20K right now?"
+
+## Pages
+
+- [Dashboard](https://cantonvenues.com/): tokens, best execution, premiums, spreads, pools, perps, API
+- [Venues](https://cantonvenues.com/venues/): one page per venue with its strongest facts and a share card
+- [Weekly](https://cantonvenues.com/weekly/): the last seven days of Canton DEX volume by venue
+- [Telegram channel](https://t.me/cantonvenues): a weekday post and loud alerts
+
+## Contact
+
+The form at https://cantonvenues.com/#contact. Built by Oleksii Vasyliev (https://github.com/olevasyliev).

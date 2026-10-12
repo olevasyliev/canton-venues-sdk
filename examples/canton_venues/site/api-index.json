@@ -1,0 +1,100 @@
+{
+  "name": "Canton Venues open API",
+  "about": "Live, read-only market data for Canton Network trading venues. No key, cross-origin enabled, refreshed every five minutes; every file carries t, the unix time of its snapshot.",
+  "base": "https://cantonvenues.com/api/v1/",
+  "endpoints": [
+    {
+      "name": "summary",
+      "url": "https://cantonvenues.com/api/v1/summary.json",
+      "about": "Canton Coin price, ecosystem figures, how many tokens and venues are priced"
+    },
+    {
+      "name": "tokens",
+      "url": "https://cantonvenues.com/api/v1/tokens.json",
+      "about": "every token: price, liquidity, 24h volume, 24h/7d change, the venues it trades on, 7-day sparkline"
+    },
+    {
+      "name": "execution",
+      "url": "https://cantonvenues.com/api/v1/execution.json",
+      "about": "best execution: every venue quoted at $100, $1K, $10K and $50K, both directions, net of each venue's network fee (`network_fee` documents the fee per venue and whether it was measured or assumed)"
+    },
+    {
+      "name": "premium",
+      "url": "https://cantonvenues.com/api/v1/premium.json",
+      "about": "each asset's Canton price against its outside reference (CoinGecko) or peg, overall and per venue"
+    },
+    {
+      "name": "scan",
+      "url": "https://cantonvenues.com/api/v1/scan.json",
+      "about": "every cross-venue round trip at its best size, after costs"
+    },
+    {
+      "name": "spreads",
+      "url": "https://cantonvenues.com/api/v1/spreads.json",
+      "about": "daily spread study: how long cross-venue spreads live"
+    },
+    {
+      "name": "alerts",
+      "url": "https://cantonvenues.com/api/v1/alerts.json",
+      "about": "active alerts and the feed of every alert fired (spreads, pegs, premiums)"
+    },
+    {
+      "name": "venues",
+      "url": "https://cantonvenues.com/api/v1/venues.json",
+      "about": "every Canton venue: type, 24h volume, what is read"
+    },
+    {
+      "name": "venue_history",
+      "url": "https://cantonvenues.com/api/v1/venue_history.json",
+      "about": "per venue: daily volume and hourly readings"
+    },
+    {
+      "name": "lp",
+      "url": "https://cantonvenues.com/api/v1/lp.json",
+      "about": "pools: liquidity, 24h volume, fee, fee APR"
+    },
+    {
+      "name": "pools",
+      "url": "https://cantonvenues.com/api/v1/pools.json",
+      "about": "raw pool reserves and order-book levels per venue, the inputs every quote is computed from"
+    },
+    {
+      "name": "perps",
+      "url": "https://cantonvenues.com/api/v1/perps.json",
+      "about": "perp markets on Rocky and Ekiden: price, basis, funding, spread"
+    },
+    {
+      "name": "history",
+      "url": "https://cantonvenues.com/api/v1/history.json",
+      "about": "eight days of prices and premiums in five-minute steps (large, ~1.2 MB)"
+    },
+    {
+      "name": "desk",
+      "url": "https://cantonvenues.com/api/v1/desk.json",
+      "about": "the paper desk's full record: router and arbitrage simulated on live quotes"
+    },
+    {
+      "name": "weekly",
+      "url": "https://cantonvenues.com/api/v1/weekly.json",
+      "about": "the rolling last-7-days volume card by venue and day"
+    }
+  ],
+  "mcp": {
+    "url": "https://cantonvenues.com/mcp",
+    "transport": "streamable-http",
+    "tools": [
+      "market_overview",
+      "list_tokens",
+      "token",
+      "quote",
+      "premiums",
+      "spreads",
+      "alerts",
+      "pools",
+      "venues",
+      "perps"
+    ]
+  },
+  "docs": "https://cantonvenues.com/llms.txt",
+  "source": "https://github.com/olevasyliev/canton-venues-sdk"
+}

@@ -1114,3 +1114,23 @@ def test_best_price_table_ranks_after_network_fees():
     assert best("cantex") == [True] and best("oneswap") == [False]
     assert not any(x["rule"] == "best_quote" for x in f["oneswap"]["leads"])
     assert "network fees are not" not in vp.best_price_html(f["cantex"])
+
+
+def test_sitemap_lists_the_dashboard_and_every_live_venue_page(tmp_path):
+    vp.build(tmp_path, data(), T)
+    xml = (tmp_path / "sitemap.xml").read_text()
+    locs = re.findall(r"<loc>(.+?)</loc>", xml)
+    pages = {p.parent.name for p in (tmp_path / "venues").glob("*/index.html")}
+    assert locs[:2] == [f"{vp.SITE}/", f"{vp.SITE}/venues/"] and locs[-1] == f"{vp.SITE}/weekly/"
+    assert {u.rsplit("/", 2)[1] for u in locs[2:-1]} == pages
+
+
+def test_agent_guide_and_api_index_list_the_same_endpoints():
+    import json
+
+    site = Path(vp.__file__).parent / "site"
+    guide = re.findall(r"^- \[(\w+)\.json\]\((\S+)\)", (site / "llms.txt").read_text(), re.M)
+    index = json.loads((site / "api-index.json").read_text())
+    assert [(e["name"], e["url"]) for e in index["endpoints"]] == guide
+    assert all(u == f"{index['base']}{n}.json" for n, u in guide)
+    assert "—" not in (site / "llms.txt").read_text()
