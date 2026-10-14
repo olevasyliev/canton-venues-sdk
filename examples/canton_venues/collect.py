@@ -57,6 +57,10 @@ log = logging.getLogger("venues")
 USDCX = "USDCX"
 USDCX_GECKO = "xreserve-bridged-usdc-canton"
 SLOW_EVERY = 3
+# read every tick; one that does not answer is left out of that tick, the rest is published
+CORE = ("cantex", "tradecraft")
+# while Cantex does not answer, its last 24h volume and tickers stand in for this long
+CX_STATS_MAX_AGE_S = 3600
 HISTORY_KEEP_S = 8 * 24 * 3600
 DESK_KEEP = 400
 LLAMA = "https://api.llama.fi"
@@ -135,6 +139,10 @@ class Collector:
                          "ekiden": EkidenAdapter(), "oneswap": OneSwapPublicData(),
                          "poolparty": PoolPartyPublicData(), "temple": TempleAdapter()}
         self.live: set[str] = set()
+        # core venue -> unix time of the first failed read in a row; empty when both answered
+        self.down: dict[str, int] = {}
+        self.cc_inst = None  # CC's instrument, from Cantex's pools; kept while Cantex is down
+        self.cx_stats: dict = {}  # Cantex's last 24h volume and tickers, with the time they were read
         self.cc_usd_last = Decimal(0)
         self.temple_priced = False
         self.rocky_books: dict[str, float] = {}  # each Rocky spot book's 24h turnover in dollars, this tick
@@ -175,18 +183,20 @@ class Collector:
 
     async def _refresh_slow(self, tc_states, cantex_markets) -> None:
         """Candles, per-pool Tradecraft volume, DefiLlama. Each part fails alone."""
+        symbols = [mk["symbol"] for mk in cantex_markets if mk.get("source") == "cantex"]
         try:
-            symbols = [mk["symbol"] for mk in cantex_markets if mk.get("source") == "cantex"]
-            self.slow["candles"] = await self.cantex.candles(symbols, 3600, timeout=40)
+            if symbols:  # none while Cantex is down: the last candles stay
+                self.slow["candles"] = await self.cantex.candles(symbols, 3600, timeout=40)
         except Exception as exc:  # noqa: BLE001
             log.warning("candles: %s", exc)
         try:
-            vols = {}
-            for st in tc_states:
-                v = await self.tradecraft.pool_volume_usd(st.token_a, st.token_b)
-                vols[st.amm_id] = float(v.get("1d", 0))
-            self.slow["tc_volume"] = vols
-            self.fresh["tradecraft"] = int(time.time())
+            if tc_states:  # none while Tradecraft is down: its last volumes stay
+                vols = {}
+                for st in tc_states:
+                    v = await self.tradecraft.pool_volume_usd(st.token_a, st.token_b)
+                    vols[st.amm_id] = float(v.get("1d", 0))
+                self.slow["tc_volume"] = vols
+                self.fresh["tradecraft"] = int(time.time())
         except Exception as exc:  # noqa: BLE001
             log.warning("tradecraft volume: %s", exc)
         try:
@@ -211,7 +221,7 @@ class Collector:
         except Exception as exc:  # noqa: BLE001
             log.warning("defillama: %s", exc)
         # Tradecraft's own hourly volume per pool, last week, summed into complete days; once an hour
-        if time.time() - self.slow.get("tc_hist_t", 0) >= 3600:
+        if tc_states and time.time() - self.slow.get("tc_hist_t", 0) >= 3600:
             try:
                 hist = [await self.tradecraft.volume_history(st.token_a, st.token_b, "week") for st in tc_states]
                 venue_history.set_daily(self.vhist, "tradecraft", "tradecraft",
@@ -256,6 +266,21 @@ class Collector:
                 await self.optional[name].close()
                 return None
         return self.optional[name]
+
+    def _core_down(self, venue: str, now: int, exc: Exception) -> None:
+        log.warning("%s: not read, left out of this tick: %r", venue, exc)
+        self.down.setdefault(venue, now)
+
+    def _cc_instrument(self, cx_states):
+        """CC's instrument, which every venue's tokens are matched against: from Cantex's pools,
+        or the last one seen while Cantex does not answer."""
+        found = next((s.token_a if s.symbol_a == CC else s.token_b
+                      for s in cx_states if CC in (s.symbol_a, s.symbol_b)), None)
+        if found is not None:
+            self.cc_inst = found
+        if self.cc_inst is None:
+            raise RuntimeError("CC's instrument is unknown: Cantex has not answered since the start")
+        return self.cc_inst
 
     def _drop(self, name: str, exc: Exception) -> None:
         log.warning("%s: %s", name, exc)
@@ -436,7 +461,8 @@ class Collector:
         rows = []
         for v in VENUES:
             vol = own.get(v["id"]) if v["id"] in own else llama.get(v.get("llama"))
-            live = v["status"] != "priced" or v["id"] in ("cantex", "tradecraft") or v["id"] in self.live
+            live = (v["status"] != "priced" or v["id"] in self.live
+                    or (v["id"] in CORE and v["id"] not in self.down))
             status = v["status"] if live else "down"
             note = v["note"]
             if v["id"] == "temple" and self.temple_priced:
@@ -473,8 +499,7 @@ class Collector:
 
     def _books(self, cx_states, tc_states, tc_pools, lp_share_cx):
         """symbol -> venue -> VenuePool, CC-paired pools only, matched by instrument."""
-        cc_inst = next(s.token_a if s.symbol_a == CC else s.token_b
-                       for s in cx_states if CC in (s.symbol_a, s.symbol_b))
+        cc_inst = self._cc_instrument(cx_states)
         names: dict = {}
         for t in self.slow.get("tokens_info", []):
             names[(t["instrument_admin"], t["instrument_id"])] = t["instrument_symbol"]
@@ -532,8 +557,7 @@ class Collector:
         OneSwap names issuers, so its tokens match by instrument. Pool Party names only instrument
         ids, so its tokens match by id, and only where that id is unambiguous across Cantex tokens.
         """
-        cc_inst = next(s.token_a if s.symbol_a == CC else s.token_b
-                       for s in cx_states if CC in (s.symbol_a, s.symbol_b))
+        cc_inst = self._cc_instrument(cx_states)
         by_inst, by_id = {}, {}
         for t in self.slow.get("tokens_info", []):
             by_inst[(t["instrument_admin"], t["instrument_id"])] = t["instrument_symbol"]
@@ -630,17 +654,39 @@ class Collector:
         started = time.monotonic()
         now = int(time.time())
         now_ms = now * 1000
-        cx_states = await self.cantex.pool_states()
-        tc_states = await self.tradecraft.pool_states()
-        tc_pools = await self.tradecraft.pools()
-        self.fresh["cantex"] = now  # read every tick: a failed read fails the tick
+        # A core venue that does not answer is left out of this tick: none of its prices are shown (an
+        # older read is never passed off as current), its row says down, and the rest is published.
+        cx_states, cx_volume, tickers = [], {}, []
+        try:
+            cx_states = await self.cantex.pool_states()
+            cx_volume = await self.cantex.volume()
+            tickers = await self.cantex.tickers()
+            self.cx_stats = {"t": now, "volume": cx_volume, "tickers": tickers}
+            self.fresh["cantex"] = now
+            self.down.pop("cantex", None)
+        except Exception as exc:  # noqa: BLE001
+            self._core_down("cantex", now, exc)
+            cx_states = []
+            # its 24h volume and tickers are rolling day figures: the last read stands in for an hour
+            if self.cx_stats and now - self.cx_stats["t"] <= CX_STATS_MAX_AGE_S:
+                cx_volume, tickers = self.cx_stats["volume"], self.cx_stats["tickers"]
+        try:
+            tc_states = await self.tradecraft.pool_states()
+            tc_pools = await self.tradecraft.pools()
+            self.down.pop("tradecraft", None)
+        except Exception as exc:  # noqa: BLE001
+            self._core_down("tradecraft", now, exc)
+            tc_states, tc_pools = [], []
         self.unpriced = []
         slow = self.tick_no % SLOW_EVERY == 0 or not self.slow
         if slow:
-            markets = await self.cantex.markets()
+            markets = []
+            if "cantex" not in self.down:
+                try:
+                    markets = await self.cantex.markets()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("cantex markets: %s", exc)
             await self._refresh_slow(tc_states, markets)
-        cx_volume = await self.cantex.volume()
-        tickers = await self.cantex.tickers()
         gecko = await self._gecko()
         if gecko:
             self.slow["gecko_last"] = gecko
@@ -679,7 +725,8 @@ class Collector:
         for k, routes in dollar.items():
             scan += m.usd_scan(k, routes, cc_usd)
         scan.sort(key=lambda x: -x["net_usd"])
-        self._paper(books, cc_usd, scan, now)
+        if not self.down:  # the paper desk trades only on a full view of the venues
+            self._paper(books, cc_usd, scan, now)
         lp = self._lp(books, cc_usd, tickers, tc_states)
         summary = self._summary(cc_usd, cx_volume, gecko, series, now_ms, books, now,
                                 time.monotonic() - started)
@@ -691,7 +738,9 @@ class Collector:
         write_json(self.api / "execution.json", {"t": now, "sizes_usd": list(m.SIZES_USD),
                                                   "network_fee": m.fee_table_json(), "pairs": execution})
         try:
-            exec_history.record(self.state / "exec", now, execution, m.fee_table_json())
+            # an hour without a core venue is left unrecorded: it would credit its rivals with that hour
+            if not self.down:
+                exec_history.record(self.state / "exec", now, execution, m.fee_table_json())
         except Exception:  # noqa: BLE001
             log.exception("execution history")
         write_json(self.api / "scan.json", {"t": now, "round_trip_cost_cc": float(m.ROUND_TRIP_COST_CC),
@@ -727,8 +776,9 @@ class Collector:
                               fresh=self.fresh)
         except Exception:  # one bad page must not fail the tick
             log.exception("venue pages")
-        await self._alerts(tokens, premium, scan, now)
-        await self._morning(tokens)
+        if not self.down:  # alerts and the channel's post of the day wait for a tick with every core venue
+            await self._alerts(tokens, premium, scan, now)
+            await self._morning(tokens)
         self.tick_no += 1
         log.info("tick %d: %d tokens, %d on 2 venues, %d routes clear, %.1fs", self.tick_no,
                  len(tokens), sum(len(v) > 1 for v in books.values()),
@@ -1055,7 +1105,9 @@ class Collector:
             "ecosystem": self.slow.get("llama"),
             "tokens": len(books),
             "on_two_venues": sum(len(v) > 1 for v in books.values()),
-            "venues_priced": ["cantex", "tradecraft"] + sorted(self.live),
+            "venues_priced": [v for v in CORE if v not in self.down] + sorted(self.live),
+            # a core venue left out since this time (watchdog.py tells the owner after 30 min)
+            "down_since": dict(self.down),
         }
 
 

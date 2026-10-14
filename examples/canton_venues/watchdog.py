@@ -10,6 +10,10 @@ tick that fails keeps the old snapshot and records ``error`` and ``error_t`` in 
 - still stale: a reminder every ``REMIND_S`` (6 h), not on every run;
 - fresh again: one message saying how long the site was stale.
 
+A core venue (Cantex, Tradecraft) that stops answering no longer stops the collector: it is left
+out and ``summary.json`` names it in ``down_since``. Left out for over ``STALE_S`` is told the same
+way (one message, reminders, one message when it is back); a new trouble is told at once.
+
 The bot and chat are the pair contact.py and crosscheck.py use (TELEGRAM_BOT_TOKEN, CONTACT_CHAT_ID
 from the server's .env). What was last sent lives in ``--state`` (off the web root), so a restart
 never repeats an alert. Written after the 13–14 Oct outage: a new empty Cantex pool failed every
@@ -61,29 +65,48 @@ def fetch(url: str = URL, now: datetime | None = None) -> tuple[dict | None, str
 def check(summary: dict | None, state: dict, now: datetime,
           fetch_error: str | None = None) -> tuple[str | None, dict]:
     """The message to send (None for none) and the state to keep."""
+    now_s = now.timestamp()
     t = (summary or {}).get("t")
-    if t is not None and now.timestamp() - t <= STALE_S:
+    fresh = t is not None and now_s - t <= STALE_S
+    # a core venue the collector has left out for over STALE_S (summary.json ``down_since``)
+    down = {v: since for v, since in sorted(((summary or {}).get("down_since") or {}).items())
+            if now_s - since > STALE_S} if fresh else {}
+    if fresh and not down:
         if not state.get("alerted"):
             return None, {}
+        if state.get("kind") == "venues":
+            names = ", ".join(v.capitalize() for v in state.get("venues", []))
+            return (f"<b>cantonvenues.com has every venue again</b>\n{names} answering again, "
+                    f"out for {_ago(now_s - state['since'])}."), {}
         last = state.get("last_t")
         gap = f"no fresh snapshot for {_ago(t - last)} (since {_when(last)})" if last else \
             "the site had not answered"
         return f"<b>cantonvenues.com is fresh again</b>\nSnapshot {_when(t)}; {gap}.", {}
 
+    kind = "venues" if fresh else "stale"
     alerted = state.get("alerted")
-    if alerted and now.timestamp() - alerted < REMIND_S:
+    # a reminder only for the same trouble; a new one (the site stops, another venue goes) is told now
+    same = state.get("kind", "stale") == kind and state.get("venues", []) == list(down)
+    if alerted and same and now_s - alerted < REMIND_S:
         return None, state
+    still = "still " if alerted and same else ""
+    if fresh:
+        lines = [f"<b>cantonvenues.com is {still}missing a venue</b>"]
+        for v, since in down.items():
+            lines.append(f"{v.capitalize()} has not answered since {_when(since)}, {_ago(now_s - since)} ago. "
+                         "The site runs without its prices.")
+        return "\n".join(lines), {"alerted": now_s, "kind": "venues", "venues": list(down),
+                                  "since": min(down.values())}
     last = t if t is not None else state.get("last_t")
-    title = "still not refreshing" if alerted else "is not refreshing"
-    lines = [f"<b>cantonvenues.com {title}</b>"]
+    lines = [f"<b>cantonvenues.com {'still not' if still else 'is not'} refreshing</b>"]
     if t is None:
         lines.append(f"The site did not answer: {html.escape(fetch_error or 'no snapshot time')}.")
     if last:
-        lines.append(f"Last snapshot {_when(last)}, {_ago(now.timestamp() - last)} ago.")
+        lines.append(f"Last snapshot {_when(last)}, {_ago(now_s - last)} ago.")
     if summary and summary.get("status") == "error" and summary.get("error"):
         at = f" at {_when(summary['error_t'])}" if summary.get("error_t") else ""
         lines.append(f"Collector error{at}: {html.escape(str(summary['error'])[:300])}")
-    return "\n".join(lines), {"alerted": now.timestamp(), "last_t": last}
+    return "\n".join(lines), {"alerted": now_s, "kind": "stale", "last_t": last}
 
 
 def run(state_path: Path, now: datetime | None = None,

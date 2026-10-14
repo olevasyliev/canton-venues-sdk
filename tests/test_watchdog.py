@@ -29,7 +29,7 @@ def test_a_stale_snapshot_alerts_once_with_the_collector_error():
     assert "is not refreshing" in text
     assert "45 min ago" in text and "14 Oct 09:15 UTC" in text
     assert "Collector error at 14 Oct 09:55 UTC: conversion from NoneType" in text
-    assert state == {"alerted": NOW.timestamp(), "last_t": s["t"]}
+    assert state == {"alerted": NOW.timestamp(), "kind": "stale", "last_t": s["t"]}
     # ten minutes later, still stale: already reported
     later = NOW + timedelta(minutes=10)
     assert wd.check(s, state, later) == (None, state)
@@ -76,3 +76,28 @@ def test_run_keeps_state_between_runs_and_retries_an_undelivered_message(tmp_pat
     wd.run(path, back, get=lambda: ({"t": back.timestamp() - 60}, None), deliver=deliver)
     assert len(sent) == 2 and "fresh again" in sent[1]
     assert json.loads(path.read_text()) == {}
+
+
+def test_a_venue_left_out_for_over_30_min_is_told_once_then_when_it_is_back():
+    s = summary(3, down_since={"cantex": NOW.timestamp() - 10 * 60})
+    assert wd.check(s, {}, NOW) == (None, {})  # ten minutes out: a blip, nothing sent
+
+    s["down_since"]["cantex"] = NOW.timestamp() - 45 * 60
+    text, state = wd.check(s, {}, NOW)
+    assert "is missing a venue" in text and "Cantex has not answered since 14 Oct 09:15 UTC, 45 min ago" in text
+    assert state["kind"] == "venues" and state["venues"] == ["cantex"]
+    assert wd.check(s, state, NOW + timedelta(minutes=10)) == (None, state)
+
+    later = NOW + timedelta(minutes=30)
+    back, _ = wd.check({"t": later.timestamp() - 120, "down_since": {}}, state, later)
+    assert "has every venue again" in back and "Cantex answering again, out for 75 min" in back
+
+
+def test_a_new_trouble_is_told_at_once_not_held_for_the_reminder():
+    venues = {"alerted": NOW.timestamp() - 600, "kind": "venues", "venues": ["cantex"],
+              "since": NOW.timestamp() - 3600}
+    text, state = wd.check(summary(45), venues, NOW)  # the whole site stopped
+    assert "is not refreshing" in text and state["kind"] == "stale"
+    both = summary(2, down_since={"cantex": NOW.timestamp() - 3600, "tradecraft": NOW.timestamp() - 2400})
+    text, state = wd.check(both, venues, NOW)  # a second venue went
+    assert "Tradecraft has not answered" in text and state["venues"] == ["cantex", "tradecraft"]
