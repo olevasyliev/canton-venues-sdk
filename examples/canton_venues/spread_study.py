@@ -81,7 +81,8 @@ async def sample(c: Collector) -> dict:
     await c._reserve_venues(books, cx)
     cc_usd = m.cc_usd(list(books[USDCX].values()), Decimal(1))
     _, ob_books, _ = await c._rocky_spot(books, cc_usd, Decimal(1))
-    _, t_books, _ = await c._temple_spot(books, Decimal(1))
+    # Temple's CC/USDCx book (the fourth value) is left out here: the study fingerprints pool reserves
+    _, t_books, _, _ = await c._temple_spot(books, Decimal(1))
     for k, v in t_books.items():
         ob_books.setdefault(k, {}).update(v)
     routes = []

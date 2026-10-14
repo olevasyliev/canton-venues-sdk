@@ -132,3 +132,33 @@ def test_no_secret_in_the_code_and_nothing_sent_without_one(monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("CONTACT_CHAT_ID", raising=False)
     assert cx.send("x") is False
+
+
+def test_http_get_tries_again_after_a_server_error_but_not_after_a_client_error(monkeypatch):
+    import io
+    import urllib.error
+
+    answers, waits = [], []
+
+    def urlopen(req, timeout=None):
+        code = answers.pop(0)
+        if code != 200:
+            raise urllib.error.HTTPError(req.full_url, code, "x", {}, io.BytesIO(b""))
+        return io.BytesIO(b'{"ok": 1}')
+
+    monkeypatch.setattr(cx.urllib.request, "urlopen", urlopen)
+    answers[:] = [502, 200]  # Temple's first answer for a cold window, then the data
+    assert cx.http_get("https://x", sleep=waits.append) == {"ok": 1} and waits == [2]
+    answers[:] = [502, 502, 502]
+    try:
+        cx.http_get("https://x", sleep=waits.append)
+        raise AssertionError("three server errors must raise")
+    except urllib.error.HTTPError:
+        pass
+    answers[:] = [400]
+    try:
+        cx.http_get("https://x", sleep=waits.append)
+        raise AssertionError("a client error is not tried again")
+    except urllib.error.HTTPError:
+        pass
+    assert answers == []

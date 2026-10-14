@@ -28,6 +28,8 @@ import html
 import json
 import logging
 import os
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -59,12 +61,29 @@ LLAMA_TVL = ("cantex",)
 Get = Callable[[str, dict | None], object]
 
 
-def http_get(url: str, params: dict | None = None) -> object:
+RETRY_WAIT_S = (2, 5)  # after a failed try: two more tries, this long apart
+
+
+def http_get(url: str, params: dict | None = None, sleep: Callable[[float], None] = time.sleep) -> object:
+    """GET JSON, trying again after a server error or a dropped connection.
+
+    Temple answers 502 to the first ask for a window it has not served lately and 200 a second later
+    (seen 2026-10-14 on 6 Oct): without a retry its weekly check failed every day.
+    """
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": "canton-venues-crosscheck/1"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read())
+    for wait in (*RETRY_WAIT_S, None):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500 or wait is None:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if wait is None:
+                raise
+        sleep(wait)
 
 
 # === outside figures =======================================================
