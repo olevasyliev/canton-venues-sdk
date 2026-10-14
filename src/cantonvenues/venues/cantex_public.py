@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 from decimal import Decimal
@@ -40,6 +41,8 @@ TESTNET_HOST = "https://api.testnet.cantex.io"
 HOST_ENV = "CANTEX_PUBLIC_HOST"
 CANDLE_PERIODS = (60, 300, 600, 3600)
 CC_ID = "Amulet"
+
+log = logging.getLogger(__name__)
 
 
 def swap_output(reserve_in: Decimal, reserve_out: Decimal, amount: Decimal, fee: Decimal) -> Decimal:
@@ -125,24 +128,32 @@ class CantexPublicData(PoolDataAdapter):
             self._client = None
 
     async def pool_states(self) -> list[PoolState]:
-        """Every pool with reserves, fee and TVL, from ``/pools/state``."""
+        """Every pool with reserves, fee and TVL, from ``/pools/state``.
+
+        A pool listed before it is funded comes with zero reserves and ``price: null``
+        (CBNB-CC, 2026-10-13); its price and TVL read as 0. A pool missing anything else
+        is left out with a warning, so one malformed pool never fails the whole read.
+        """
         raw = await self._get("/pools/state")
         states = []
         for p in raw["data"]["pools"]:
-            states.append(PoolState(
-                contract_id=p["contract_id"],
-                pool_id=p["pool_id"],
-                symbol=p["symbol"],
-                token_a=_inst(p["token_a_instrument"]),
-                token_b=_inst(p["token_b_instrument"]),
-                symbol_a=p["token_a_instrument"]["symbol"],
-                symbol_b=p["token_b_instrument"]["symbol"],
-                reserve_a=Decimal(p["reserve_a"]),
-                reserve_b=Decimal(p["reserve_b"]),
-                fee=Decimal(p["fee_rate"]),
-                price=Decimal(p["price"]),
-                tvl_cc=Decimal(p["tvl_cc"]),
-            ))
+            try:
+                states.append(PoolState(
+                    contract_id=p["contract_id"],
+                    pool_id=p["pool_id"],
+                    symbol=p["symbol"],
+                    token_a=_inst(p["token_a_instrument"]),
+                    token_b=_inst(p["token_b_instrument"]),
+                    symbol_a=p["token_a_instrument"]["symbol"],
+                    symbol_b=p["token_b_instrument"]["symbol"],
+                    reserve_a=Decimal(p["reserve_a"]),
+                    reserve_b=Decimal(p["reserve_b"]),
+                    fee=Decimal(p["fee_rate"]),
+                    price=Decimal(p["price"] or 0),
+                    tvl_cc=Decimal(p["tvl_cc"] or 0),
+                ))
+            except (KeyError, TypeError, ArithmeticError) as exc:
+                log.warning("cantex: pool %s left out: %r", p.get("symbol"), exc)
         self._states = states
         return states
 

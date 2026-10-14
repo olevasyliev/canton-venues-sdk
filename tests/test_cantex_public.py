@@ -37,6 +37,20 @@ async def test_pool_states_parse_decimals_and_instruments():
     assert s.reserve_b == Decimal("197683.8326573317") and s.fee == Decimal("0.0005")
 
 
+async def test_unfunded_pool_with_null_price_does_not_fail_the_read():
+    # live /pools/state on 2026-10-13: a new CBNB-CC pool with zero reserves and price null
+    bnb = {"admin": "bnb::1220", "id": "CBNB", "symbol": "CBNB"}
+    empty = {"contract_id": "00cd", "pool_id": "5898460812258591496", "symbol": "CBNB-CC",
+             "fee_rate": "0.0010000000", "price": None, "reserve_a": "0.0000000000",
+             "reserve_b": "0.0000000000", "token_a_instrument": bnb, "token_b_instrument": CC,
+             "tvl_cc": "0.0000000000"}
+    broken = {**empty, "contract_id": "00ef", "symbol": "X-CC", "reserve_a": None}
+    body = {"data": {"pools": STATE["data"]["pools"] + [empty, broken]}}
+    states = await _adapter({"/v1/public/pools/state": body}).pool_states()
+    assert [s.symbol for s in states] == ["CC-USDCX", "CBNB-CC"]  # the malformed pool alone is left out
+    assert states[1].price == 0 and states[1].tvl_cc == 0
+
+
 async def test_quote_is_constant_product_with_fee_on_input():
     c = _adapter({"/v1/public/pools/state": STATE})
     cc, usd = Instrument("DSO::1220", "Amulet"), Instrument("usdc::1220", "USDCx")
