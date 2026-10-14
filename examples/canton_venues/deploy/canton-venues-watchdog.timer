@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Canton Venues watchdog every ten minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+Unit=canton-venues-watchdog.service
+
+[Install]
+WantedBy=timers.target

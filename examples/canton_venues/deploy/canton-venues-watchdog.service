@@ -1,0 +1,15 @@
+[Unit]
+Description=Canton Venues watchdog: one Telegram message to the owner when the live snapshot is over 30 min old, one when it is fresh again
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
+Environment=PYTHONUNBUFFERED=1
+# TELEGRAM_BOT_TOKEN and CONTACT_CHAT_ID (the owner's chat with @cantonvenuesbot), as contact.py (chmod 600)
+EnvironmentFile=-/opt/canton-venues/.env
+ExecStart=/opt/canton-venues/.venv/bin/python watchdog.py --state /var/www/canton-venues-state/watchdog.json
+TimeoutStartSec=60
+MemoryMax=60M
+CPUQuota=10%
