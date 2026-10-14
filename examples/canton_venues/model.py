@@ -37,6 +37,16 @@ REFERENCES = {
 # 2026-10-14), so no premium is shown for these until a spot source is connected.
 NO_SPOT = {"SPYE": "SPY", "QQQE": "QQQ"}
 STABLES = {"USDCX", "USDC.B", "FRXUSD.B", "USX", "TF-USDT", "USDXLR", "USDM1"}
+# A token that traded less than this in 24h raises no alert and leaves the pegs post: its pool barely
+# moves, so its dollar price only follows CC's (USDM1, $130 traded in a $102K pool, read +1.03% "off its
+# peg" on 2026-10-14 16:47 as Tradecraft's CC/USDCx pool moved)
+MIN_TRADED_USD = 1_000
+
+
+def idle(tokens: list[dict]) -> set[str]:
+    """Tokens that did not trade ``MIN_TRADED_USD`` in 24h on venues that publish volume."""
+    return {t["key"] for t in tokens if t.get("traded_24h") is False
+            or (t.get("traded_24h") and t.get("volume_24h_usd") is not None and t["volume_24h_usd"] < MIN_TRADED_USD)}
 # A reference this far off is a unit mismatch (an ounce against a gram, say),
 # not a premium; it is reported as unmatched rather than shown as a number.
 MAX_PLAUSIBLE_PREMIUM = Decimal("0.25")

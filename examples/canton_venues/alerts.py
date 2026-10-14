@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from html import escape as esc
 
-from model import NO_SPOT, REFERENCES, STABLES
+from model import NO_SPOT, REFERENCES, STABLES, idle
 
 PEG_LIMIT = 0.005        # a stablecoin more than 0.5% from $1
 PREMIUM_LIMIT = 0.01     # an asset more than 1% from its outside price
@@ -48,15 +48,15 @@ def pct(f: float) -> str:
 
 def evaluate(tokens: list[dict], premium: list[dict], scan: list[dict],
              price_hour_ago: dict[str, float]) -> list[Alert]:
-    """Every condition that is true right now. A token that traded nowhere in 24h (``traded_24h``
-    False) raises none: its price is CC's times a frozen ratio, so it only retells CC's moves."""
+    """Every condition that is true right now. A token that barely traded in 24h (``model.idle``)
+    raises none: its price is CC's times a frozen ratio, so it only retells CC's moves."""
     liq = {t["key"]: t.get("liquidity_usd") or 0 for t in tokens}
     sym = {t["key"]: t["symbol"] for t in tokens}
-    idle = {t["key"] for t in tokens if t.get("traded_24h") is False}
+    quiet = idle(tokens)
     out: list[Alert] = []
     for a in premium:
         p = a.get("premium")
-        if a.get("status") != "ok" or p is None or a["key"] in idle:
+        if a.get("status") != "ok" or p is None or a["key"] in quiet:
             continue
         if a["key"] != "CC" and liq.get(a["key"], 0) < MIN_LIQUIDITY_USD:
             continue
@@ -84,7 +84,7 @@ def evaluate(tokens: list[dict], premium: list[dict], scan: list[dict],
                              r["net_usd"] >= LOUD_ROUTE_USD))
     for t in tokens:
         before, now = price_hour_ago.get(t["key"]), t.get("price_usd")
-        if not before or not now or liq.get(t["key"], 0) < MIN_LIQUIDITY_USD or t["key"] in idle:
+        if not before or not now or liq.get(t["key"], 0) < MIN_LIQUIDITY_USD or t["key"] in quiet:
             continue
         move = now / before - 1
         if abs(move) > MOVE_LIMIT:

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from model import REFERENCES, STABLES
+from model import REFERENCES, STABLES, idle
 from venue_pages import VENUES
 
 SITE = "https://cantonvenues.com"
@@ -185,14 +185,14 @@ def execution_post(samples: list[dict]) -> Post | None:
 def pegs_post(history: dict, tokens: list[dict], symbols: dict[str, str], now: int) -> Post | None:
     """Stablecoins: share of the week within 0.5% of $1 and the worst reading. Reference assets: the
     median premium to their outside price. Only tokens with ``MIN_LIQUIDITY_USD`` in pools today that
-    traded in the last 24h (a pool that does not trade only retells CC's moves). A premium is read
+    traded $1K or more in the last 24h (a pool that barely trades only retells CC's moves). A premium is read
     only from its last method step on (history "steps"), and the line says since when."""
     ts = history.get("t") or []
     lo = next((i for i, t in enumerate(ts) if t >= now - WEEK_S), None)
     if lo is None or not ts or ts[-1] - ts[lo] < 3 * 86400:
         return None
     liq = {t["key"]: t.get("liquidity_usd") or 0 for t in tokens}
-    idle = {t["key"] for t in tokens if t.get("traded_24h") is False}
+    quiet = idle(tokens)
     since: dict[str, int] = {}
     for s in history.get("steps") or []:
         if s.get("premium"):
@@ -202,7 +202,7 @@ def pegs_post(history: dict, tokens: list[dict], symbols: dict[str, str], now: i
     stable, ref = [], []
     for key, col in (history.get("premium") or {}).items():
         pts = [(t, v) for t, v in zip(ts[lo:], col[lo:]) if v is not None and t >= since.get(key, 0)]
-        if len(pts) < 100 or key in idle:
+        if len(pts) < 100 or key in quiet:
             continue
         name = symbols.get(key, key)
         if key in STABLES and liq.get(key, 0) >= MIN_LIQUIDITY_USD:

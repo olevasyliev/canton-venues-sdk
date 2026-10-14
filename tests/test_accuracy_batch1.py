@@ -305,6 +305,16 @@ def test_pegs_post_skips_an_untraded_stablecoin():
     assert "USDCx" in post.html and "USDM1" not in post.html
 
 
+def test_a_token_that_barely_traded_raises_no_alert():
+    # live 2026-10-14 16:47: USDM1 traded $130 in 24h and read +1.03% off its peg as Tradecraft's CC/USDCx
+    # pool moved; under $1K a day its pool only follows CC
+    tokens = [{"key": "USDM1", "symbol": "USDM1", "liquidity_usd": 102_000, "traded_24h": True, "volume_24h_usd": 130.0}]
+    peg = [{"key": "USDM1", "kind": "peg", "status": "ok", "premium": 0.0103, "symbol": "USDM1", "canton_usd": 1.0103}]
+    assert al.evaluate(tokens, peg, [], {}) == []
+    tokens[0]["volume_24h_usd"] = 5_000.0
+    assert len(al.evaluate(tokens, peg, [], {})) == 1
+
+
 def test_pegs_post_reads_a_premium_from_its_method_step_on():
     now = int(datetime(2026, 10, 16, 9, 5, tzinfo=UTC).timestamp())
     ts = [now - 300 * i for i in range(7 * 288)][::-1]
