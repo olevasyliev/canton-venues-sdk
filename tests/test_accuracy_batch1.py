@@ -84,7 +84,7 @@ def _tick(tmp_path, monkeypatch):
     dead = [Candle(hour - (170 + k) * 3_600_000, D(1), D(1), D(1), D("0.01") if k == 0 else D("0.001"), D(1))
             for k in range(30)]
     states = [_state("USDCx", "30000", "3540"), _state("CBTC", "1000000", "1.4"),
-              _state("eXAG", "200000", "418"), _state("USDM1", "500000", "60400"),
+              _state("eXAG", "200000", "418"), _state("USDM1", "500000", "59000"),
               _state("TRKXRWA", "300000", "330")]
     c.cantex = _Venue(
         pool_states=states,
@@ -143,6 +143,30 @@ def test_usdcx_is_not_read_off_its_peg_by_the_pools_gap_to_the_book(tick):
     assert usdcx["price_usd"] == pytest.approx(1.0, abs=2e-4)
     row = next(a for a in tick["premium"]["assets"] if a["key"] == "USDCX")
     assert abs(row["premium"]) < 2e-4
+
+
+def test_a_pool_token_is_valued_through_its_own_venues_usdcx_pool(tick):
+    # USDM1 sits at 0.118 per CC in Cantex's pool, where CC is 0.118 USDCx: $1.00 on that venue. At the
+    # market CC price (the book's 0.1172) it read 0.68% under its peg, the pools' gap to the book
+    usdm1 = next(t for t in tick["tokens"]["tokens"] if t["key"] == "USDM1")
+    assert usdm1["price_usd"] == pytest.approx(1.0, abs=2e-4)
+    assert abs(next(a for a in tick["premium"]["assets"] if a["key"] == "USDM1")["premium"]) < 2e-4
+    cc = next(a for a in tick["premium"]["assets"] if a["key"] == "CC")
+    assert set(cc["premium_by_venue"]) == {"cantex", "temple"}  # the gap shows on CC, venue by venue
+    assert cc["premium_by_venue"]["cantex"] > cc["premium_by_venue"]["temple"]
+
+
+def test_samples_between_the_two_steps_are_dropped_but_cc(tmp_path):
+    c = collect.Collector(tmp_path)
+    asyncio.run(c.http.aclose())
+    c.history = {"t": [100, 200, 300], "usd": {"CC": [0.11, 0.12, 0.12], "USDM1": [1.0, 1.007, 1.007]},
+                 "premium": {"CC": [0.0, 0.001, 0.001], "USDM1": [0.0, 0.007, 0.007]},
+                 "steps": [{**s, "t": 200} for s in collect.STEPS if s["id"] != "pool-tokens-in-venue"]}
+    c._mark_steps(400)
+    assert c.history["usd"]["USDM1"] == [1.0, None, None] and c.history["premium"]["USDM1"] == [0.0, None, None]
+    assert c.history["usd"]["CC"] == [0.11, 0.12, 0.12]
+    c._mark_steps(500)  # once only
+    assert [s["id"] for s in c.history["steps"]].count("pool-tokens-in-venue") == 1
 
 
 def test_the_step_is_marked_once_in_the_history(tick, tmp_path):

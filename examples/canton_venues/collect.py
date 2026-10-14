@@ -89,6 +89,12 @@ STEPS = [
              "then against PAXG and KAG, tokens with their own premium."},
     {"id": "stock-tokens-no-reference", "keys": ["SPYE", "QQQE"], "premium": True,
      "what": "SPYe and QQQe no longer measured against SPYx and QQQx, tokens with their own premium."},
+    # From 16:10 to the next deploy on 2026-10-14, pool tokens were valued at the market CC price, so
+    # every stablecoin read the pools' CC gap to Temple (-54 bp then) as a peg gap: those samples of every
+    # token but CC are dropped (``_mark_steps``), so no chart or weekly post takes them as readings.
+    {"id": "pool-tokens-in-venue", "keys": [], "premium": False, "drops_since": "cc-price-depth-weighted",
+     "what": "A token in a pool is valued through its own venue's CC/USDCx pool (what it fetches in USDCx "
+             "there), not at the market CC price; samples of every token but CC since the CC step are dropped."},
 ]
 # why a CC pool is read but not quoted (lp.json unpriced_pools)
 UNNAMED = "token not named by any venue we price"
@@ -176,6 +182,8 @@ class Collector:
         self.rocky_books: dict[str, float] = {}  # each Rocky spot book's 24h turnover in dollars, this tick
         self.metal_spot: dict[str, Decimal] = {}  # gold and silver spot this tick (METALS), when usable
         self.metal_seen: dict[str, tuple[Decimal, int]] = {}  # each index's last value and since when
+        # each venue's own CC price this tick, from its CC/USDCx market (``_venue_usd``)
+        self.cc_at: dict[str, Decimal] = {}
         self.http = httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "canton-venues/1"})
         self.tick_no = 0
         self.slow: dict = {}
@@ -492,17 +500,20 @@ class Collector:
             "depth_1pct_usd": r(depth, 2) if depth is not None else None,
         }
 
-    def _prices(self, books, cc_usd, ob, cc_books=()) -> dict[str, Decimal]:
-        """Each token's Canton price across every venue that prices it, weighted by depth. USDCx also
-        weighs the CC/USDCx order books (``cc_books``, Temple's) that price CC: valued at a CC price
-        that follows the book, the pools alone would read their gap to the book as USDCx off its peg."""
+    def _venue_usd(self, venue: str, pool, cc_usd) -> Decimal:
+        """A token in a CC pool, in dollars: what it fetches in USDCx on the same venue, through that
+        venue's CC/USDCx market (the route inside the venue), or at the market CC price on a venue
+        without one. Valued at the market CC price instead, every stablecoin read the pools' CC gap to
+        Temple's book as a peg gap (+0.5 to +0.75% on 2026-10-14, the pools 54 bp under the book)."""
+        return self.cc_at.get(venue, cc_usd) / pool.mid
+
+    def _prices(self, books, cc_usd, ob) -> dict[str, Decimal]:
+        """Each token's Canton price across every venue that prices it, weighted by depth."""
         out = {}
         for sym, pools in books.items():
-            quotes = [(cc_usd / p.mid, m.amm_depth_usd(p, cc_usd)) for p in pools.values()]
+            quotes = [(self._venue_usd(v, p, cc_usd), m.amm_depth_usd(p, cc_usd)) for v, p in pools.items()]
             for info in ob.get(sym, {}).values():
                 quotes.append((Decimal(str(info["price_usd"])), Decimal(str(info["depth_usd"]))))
-            if sym == USDCX:
-                quotes += [(cc_usd / b.mid, b.depth_usd()) for b in cc_books]
             out[sym] = m.weighted_usd(quotes) or m.token_usd(list(pools.values()), cc_usd)
         return out
 
@@ -764,7 +775,7 @@ class Collector:
         stable = books.get(USDCX)
         if not stable:
             raise RuntimeError("no CC/USDCx pool on any venue")
-        t_ob, t_books, temple_cc, temple_cc_book = await self._temple_spot(books, usdcx_usd)
+        t_ob, t_books, _, temple_cc_book = await self._temple_spot(books, usdcx_usd)
         # Temple's CC/USDCx book is one of the CC/USDCx markets: it weighs in the CC price by its depth
         # (as every token's price weighs its venues) and joins every CC/USDCx comparison (best
         # execution, the scanner, the paper router, the dollar routes' CC leg); the token list and the
@@ -775,6 +786,7 @@ class Collector:
         cmp_books = {**books, USDCX: cc_markets}
         cc_usd = m.cc_price_usd(cc_markets, usdcx_usd)
         self.cc_usd_last = cc_usd
+        self.cc_at = {v: p.mid * usdcx_usd for v, p in cc_markets.items()}
 
         ob, ob_books, rocky_spot_vol = await self._rocky_spot(books, cc_usd, usdcx_usd)
         for k, v in t_ob.items():
@@ -782,7 +794,7 @@ class Collector:
         for k, v in t_books.items():
             ob_books.setdefault(k, {}).update(v)
         perps = await self._perps(gecko, cc_usd, now)
-        prices = self._prices(books, cc_usd, ob, [p for p in cc_markets.values() if isinstance(p, m.CCBook)])
+        prices = self._prices(books, cc_usd, ob)
 
         series = self._usd_series(now_ms, usdcx_usd)
         self._mark_steps(now)
@@ -790,7 +802,7 @@ class Collector:
         own = self._own_series()
 
         tokens = self._tokens(books, cc_usd, tickers, series, own, now_ms, ob, prices)
-        premium = self._premium(books, cc_usd, gecko, ob, prices, temple_cc, now)
+        premium = self._premium(books, cc_usd, gecko, ob, prices, now)
         dollar = {k: m.DollarRoutes(books[k], cc_markets, b, usdcx_usd) for k, b in ob_books.items()}
         cc_pairs = self._execution(cmp_books, cc_usd)
         # CC/USDCx stays the default view; order-book tokens in dollars come right after it
@@ -945,10 +957,20 @@ class Collector:
     # === sections ==========================================================
 
     def _mark_steps(self, now: int) -> None:
-        """Record each method step (``STEPS``) once, at the first tick computed the new way."""
-        steps = self.history.setdefault("steps", [])
-        done = {s["id"] for s in steps}
-        steps += [{**s, "t": now} for s in STEPS if s["id"] not in done]
+        """Record each method step (``STEPS``) once, at the first tick computed the new way. A step with
+        ``drops_since`` blanks every token's samples but CC's from that earlier step's time on."""
+        h = self.history
+        steps = h.setdefault("steps", [])
+        for s in STEPS:
+            if s["id"] in {x["id"] for x in steps}:
+                continue
+            since = next((x["t"] for x in steps if x["id"] == s.get("drops_since")), None)
+            if since is not None:
+                for series in (h["usd"], h["premium"]):
+                    for k, col in series.items():
+                        if k != CC:
+                            series[k] = [None if t >= since else v for t, v in zip(h["t"], col)] + col[len(h["t"]):]
+            steps.append({**s, "t": now})
 
     def _record(self, now: int, cc_usd: Decimal, prices) -> None:
         h = self.history
@@ -996,7 +1018,7 @@ class Collector:
             price = prices[sym]
             venues = {}
             for v, p in pools.items():
-                venues[v] = {"price_usd": r(cc_usd / p.mid, 8),
+                venues[v] = {"price_usd": r(self._venue_usd(v, p, cc_usd), 8),
                              "liquidity_usd": r(2 * p.cc_reserve * cc_usd, 2),
                              "depth_1pct_usd": r(m.amm_depth_usd(p, cc_usd), 2)}
             vol = vol_cx.get(sym, 0.0) + pp_vol.get(sym, 0.0) + temple_vol.get(sym, 0.0)
@@ -1031,7 +1053,7 @@ class Collector:
             })
         return sorted(out, key=lambda t: -(t["liquidity_usd"] or 0))
 
-    def _premium(self, books, cc_usd, gecko, ob, prices, temple_cc=None, now: int | None = None) -> list[dict]:
+    def _premium(self, books, cc_usd, gecko, ob, prices, now: int | None = None) -> list[dict]:
         rows = []
         h = self.history
         n = len(h["t"])
@@ -1070,12 +1092,12 @@ class Collector:
             per_venue = {}
             if pools:
                 for v, p in pools.items():
-                    pv = m.premium(cc_usd / p.mid, Decimal(str(ref)))
+                    pv = m.premium(self._venue_usd(v, p, cc_usd), Decimal(str(ref)))
                     per_venue[v] = r(pv, 6)
             for v, info in ob.get(sym, {}).items():
                 per_venue[v] = r(m.premium(Decimal(str(info["price_usd"])), Decimal(str(ref))), 6)
-            if sym == CC and temple_cc:
-                per_venue["temple"] = r(m.premium(Decimal(str(temple_cc["price_usd"])), Decimal(str(ref))), 6)
+            if sym == CC:  # each CC/USDCx market on its own: the pools' gap to Temple's book shows here
+                per_venue = {v: r(m.premium(px, Decimal(str(ref))), 6) for v, px in self.cc_at.items()}
             keep(sym, prem)
             rows.append({
                 "key": sym,
