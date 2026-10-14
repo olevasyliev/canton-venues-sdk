@@ -940,7 +940,7 @@ function renderExecution() {
   $("execnote").innerHTML = usd ? `Same dollar amount on every venue. Pool routes go through CC: dollars to CC on the best CC/USDCx pool, then CC to ${sym}, so two swaps. ${Object.entries(pair.books || {}).map(([v, b]) => `${V[v]} is one order on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "rocky" ? " (assumed: Rocky publishes no fee schedule)" : v === "temple" ? " (Temple's published rate)" : ""}`).join("; ")}. Cost is measured against the Canton price.`
     : "Pool fees and price impact included." + Object.entries(pair.books || {}).map(([v, b]) => ` ${V[v]} is one order on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "temple" ? " (Temple's published rate)" : ""}.`).join("");
   const assumed = vs.filter((v) => (D.execution.network_fee || {})[v]?.basis === "assumed").map((v) => V[v]);
-  if (D.execution.network_fee) $("execnote").innerHTML += ` Each venue's network fee per trade is taken off too${assumed.length ? `; for ${assumed.join(", ")} it is our assumption until we measure it` : ""}. Hover a figure for it before the fee.`;
+  if (D.execution.network_fee) $("execnote").innerHTML += ` Each venue's network fee per trade is taken off too${assumed.length ? `; for ${assumed.length > 1 ? assumed.slice(0, -1).join(", ") + " and " + assumed[assumed.length - 1] : assumed[0]} it is our assumption until we measure it` : ""}. Hover a figure for it before the fee.`;
 }
 function drawExec(pair, rows, xs) {
   const st = $("stage"), W = Math.max(280, st.clientWidth), narrow = W < 560, vs = execVenues(pair);
