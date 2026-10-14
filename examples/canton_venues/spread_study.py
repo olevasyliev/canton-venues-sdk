@@ -80,22 +80,26 @@ async def sample(c: Collector) -> dict:
     books = c._books(cx, tc, tcp, Decimal("0.9"))
     await c._reserve_venues(books, cx)
     _, t_books, _, cc_book = await c._temple_spot(books, Decimal(1))
-    # Temple's CC/USDCx book prices CC and fills the dollar routes' CC leg, as on the site; the CC pairs
-    # below stay pool to pool, since the study fingerprints pool reserves
+    # Temple's CC/USDCx book prices CC, as on the site; the CC pairs below stay pool to pool, since the
+    # study fingerprints pool reserves, and the dollar routes are each venue's best inside it
     cc_markets = dict(books[USDCX])
     if cc_book is not None and cc_book.bids and cc_book.asks:
         cc_markets["temple"] = m.CCBook("temple", next(iter(books[USDCX].values())).token, cc_book)
     cc_usd = m.cc_price_usd(cc_markets, Decimal(1))
-    _, ob_books, _ = await c._rocky_spot(books, cc_usd, Decimal(1))
+    c.cc_at, c.cc_usd_last = {v: p.mid for v, p in cc_markets.items()}, cc_usd
+    ob, ob_books, _ = await c._rocky_spot(books, cc_usd, Decimal(1))
     for k, v in t_books.items():
-        ob_books.setdefault(k, {}).update(v)
+        for b in v.values():
+            ob_books.setdefault(k, {})[b.symbol] = (b, USDCX)
+    prices = c._prices(books, cc_usd, ob)
+    hops = c._hops(books, cc_markets, ob_books, prices)
     routes = []
     for r in m.scan({k: v for k, v in books.items() if len(v) > 1}, cc_usd):
         pools = books[r["token"]]
         routes.append((f'{r["token"]}:{r["buy_on"]}>{r["sell_on"]}', r["net_usd"], r["size_usd"],
                        m.fingerprint(pools[r["buy_on"]], pools[r["sell_on"]])))
-    for k, b in ob_books.items():
-        for r in m.usd_scan(k, m.DollarRoutes(books[k], cc_markets, b, Decimal(1)), cc_usd):
+    for k, dr in c._dollar_routes(books, hops, ob_books, prices, Decimal(1)).items():
+        for r in m.usd_scan(k, dr, cc_usd):
             routes.append((f'{r["token"]}:{r["buy_on"]}>{r["sell_on"]}', r["net_usd"], r["size_usd"], r["fp"]))
     return {"t": int(time.time()), "routes": routes}
 
@@ -130,8 +134,9 @@ async def main() -> None:
         log.error("only %d samples, not publishing", len(samples))
         return
     # v2: dollar stables valued at par and dollar routes on USDCx books only (2026-10-04). The v1 run
-    # of that morning valued USDC.B at its pool premium and booked trips that did not exist.
-    run = summarize(samples, args.interval) | {"errors": errors, "v": 2}
+    # of that morning valued USDC.B at its pool premium and booked trips that did not exist. v3
+    # (2026-10-14): each venue's dollar route is its best inside the venue, Rocky's USDC.B books in.
+    run = summarize(samples, args.interval) | {"errors": errors, "v": 3}
     path = args.out / "api" / "v1" / "spreads.json"
     data = load_json(path, {"runs": []})
     data["runs"] = (data["runs"] + [run])[-KEEP_RUNS:]

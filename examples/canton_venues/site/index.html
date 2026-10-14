@@ -430,7 +430,7 @@ body:not(.tv) #tokenview { display: none; }
 
   <section class="block" id="execution">
     <h2>Best execution</h2>
-    <p class="sub">What each venue returns at four trade sizes. Tokens that also trade on an order book get a second view in dollars, with every venue on one chart.</p>
+    <p class="sub">What each venue returns at four trade sizes, by its best route on its own markets, one swap or two. Tokens that also trade on an order book get a second view in dollars, with every venue on one chart.</p>
     <div class="panel">
       <div class="pills" id="pairs"></div>
       <div class="pills" id="sides"></div>
@@ -937,12 +937,18 @@ function renderExecution() {
   const inU = usd ? (S.side === "buy" ? "$" : pair.symbol) : (S.side === "sell" ? "CC" : pair.symbol);
   const outU = usd ? (S.side === "buy" ? pair.symbol : "$") : (S.side === "sell" ? pair.symbol : "CC");
   const fmt = (v, u) => v == null ? '<span class="muted">book too thin</span>' : u === "$" ? money(v) : `${amt(v)} ${esc(u)}`;
-  $("fills").innerHTML = `<thead><tr><th class="l">Trade size</th>${vs.map((v) => `<th>${V[v]}${usd && pair.swaps?.[v] === 2 ? '<span class="muted"> via CC</span>' : ""}</th>`).join("")}<th class="hide-sm">Beats next best by</th></tr></thead><tbody>` +
+  // a venue's best route can take two swaps on its own markets (through CC, USDCx, ...): one token in
+  // the header when every size goes through it, otherwise marked size by size
+  const symOf = (k) => k === "CC" ? "CC" : ((D.tokens?.tokens || []).find((t) => t.key === k)?.symbol || k);
+  const viaAll = (v) => { const xs = rows.map((r) => (r.via || {})[v]); return xs.every((x) => x && x === xs[0]) ? xs[0] : null; };
+  const twoNote = (r, v) => (r.via || {})[v] && !viaAll(v) ? ` <span class="muted" title="two swaps, through ${esc(symOf(r.via[v]))}">via ${esc(symOf(r.via[v]))}</span>` : "";
+  $("fills").innerHTML = `<thead><tr><th class="l">Trade size</th>${vs.map((v) => `<th>${V[v]}${viaAll(v) ? `<span class="muted"> via ${esc(symOf(viaAll(v)))}</span>` : ""}</th>`).join("")}<th class="hide-sm">Beats next best by</th></tr></thead><tbody>` +
     rows.map((r) => `<tr><td class="l"><b>${usdSize(r.size_usd)}</b>${inU === "$" ? "" : ` <span class="muted">${amt(r.amount_in)} ${esc(inU)}</span>`}</td>
-      ${vs.map((v) => `<td class="num" style="${netBest(r) === v ? `color:${VC[v]};font-weight:700` : ""}"${r.out_net && r.out[v] != null ? ` title="${esc(`Before the network fee: ${outU === "$" ? money(r.out[v]) : amt(r.out[v]) + " " + outU}. Network fee per trade: ${feeNote(v)}`)}"` : ""}>${fmt(netOut(r)[v], outU)}</td>`).join("")}
+      ${vs.map((v) => `<td class="num" style="${netBest(r) === v ? `color:${VC[v]};font-weight:700` : ""}"${r.out_net && r.out[v] != null ? ` title="${esc(`Before the network fee: ${outU === "$" ? money(r.out[v]) : amt(r.out[v]) + " " + outU}. Network fee per trade: ${feeNote(v)}${(r.swaps || {})[v] === 2 ? ", paid on each of its two swaps" : ""}`)}"` : ""}>${fmt(netOut(r)[v], outU)}${twoNote(r, v)}</td>`).join("")}
       <td class="num hide-sm">${V[netBest(r)]} +${(netEdge(r) / 100).toFixed(2)}%</td></tr>`).join("") + "</tbody>";
-  $("execnote").innerHTML = usd ? `Same dollar amount on every venue. Pool routes go through CC: dollars to CC on the best CC/USDCx pool, then CC to ${sym}, so two swaps. ${Object.entries(pair.books || {}).map(([v, b]) => `${V[v]} is one order on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "rocky" ? " (assumed: Rocky publishes no fee schedule)" : v === "temple" ? " (Temple's published rate)" : ""}`).join("; ")}. Cost is measured against the Canton price.`
-    : "Pool fees and price impact included." + Object.entries(pair.books || {}).map(([v, b]) => ` ${V[v]} is one order on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "temple" ? " (Temple's published rate)" : ""}.`).join("");
+  const bookNote = Object.entries(pair.books || {}).map(([v, b]) => ` ${V[v]} trades it on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "rocky" ? " (assumed: Rocky publishes no fee schedule)" : v === "temple" ? " (Temple's published rate)" : ""}.`).join("");
+  $("execnote").innerHTML = (usd ? `Same dollar amount on every venue, each by its best route on its own markets: one order on a book, a pool against a dollar token, or dollars to CC to ${sym} through two of its own pools. USDC.B counts as a dollar at par while it holds within 1%.`
+    : "Each venue by its best route on its own markets, one swap or two (Temple: CC to USDCx, then USDCx to the token). Pool fees and price impact included.") + bookNote + (usd ? " Cost is measured against the Canton price." : "");
   const assumed = vs.filter((v) => (D.execution.network_fee || {})[v]?.basis === "assumed").map((v) => V[v]);
   if (D.execution.network_fee) $("execnote").innerHTML += ` Each venue's network fee per trade is taken off too${assumed.length ? `; for ${assumed.length > 1 ? assumed.slice(0, -1).join(", ") + " and " + assumed[assumed.length - 1] : assumed[0]} it is our assumption until we measure it` : ""}. Hover a figure for it before the fee.`;
 }

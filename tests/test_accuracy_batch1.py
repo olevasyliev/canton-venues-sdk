@@ -30,7 +30,7 @@ from cantonvenues.venues.cantex_public import Candle, PoolState  # noqa: E402
 SITE = Path(__file__).resolve().parents[1] / "examples" / "canton_venues"
 D = Decimal
 CC_I = Instrument("DSO::1220", "Amulet")
-INST = {s: Instrument(f"{s.lower()}::1", s) for s in ("USDCx", "CBTC", "eXAG", "USDM1", "TRKXRWA")}
+INST = {s: Instrument(f"{s.lower()}::1", s) for s in ("USDCx", "CBTC", "eXAG", "USDM1", "TRKXRWA", "cETH", "USDC.B")}
 TEMPLE_CC_MID = D("0.1172")
 
 
@@ -69,9 +69,10 @@ class _Venue:
         return call
 
 
-def _tick(tmp_path, monkeypatch):
+def _tick(tmp_path, monkeypatch, optional=None, states=()):
     """One collector tick: a thin Cantex CC/USDCx pool at 0.118 and Temple's deep CC/USDCx book at
-    0.1172; Temple's settled volume; a dead TRKXRWA candle series; USDM1 untraded; Ekiden's XAG index."""
+    0.1172; Temple's settled volume; a dead TRKXRWA candle series; USDM1 untraded; Ekiden's XAG index.
+    ``optional`` replaces optional venues (Rocky, Pool Party, ...), ``states`` adds Cantex pools."""
     now = int(time.time())
     monkeypatch.setattr(m, "metals_open", lambda t: True, raising=False)  # the spot market trades
     for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
@@ -85,7 +86,7 @@ def _tick(tmp_path, monkeypatch):
             for k in range(30)]
     states = [_state("USDCx", "30000", "3540"), _state("CBTC", "1000000", "1.4"),
               _state("eXAG", "200000", "418"), _state("USDM1", "500000", "59000"),
-              _state("TRKXRWA", "300000", "330")]
+              _state("TRKXRWA", "300000", "330"), *states]
     c.cantex = _Venue(
         pool_states=states,
         volume={"fees_cc": "10", "lp_fees_cc": "9", "volume_cc": "1000000", "swap_count": "100"},
@@ -105,7 +106,7 @@ def _tick(tmp_path, monkeypatch):
                  BookLevel(D("56.11"), D(1)), BookLevel(D("56.13"), D(1)))
     ekiden = _Venue(tickers=[xag], order_book=lambda *_: _book("XAG-USDCx", "56.12", "10", "0.01"))
     c.optional = {"rocky": _Venue(), "rocky_perp": _Venue(), "oneswap": _Venue(), "poolparty": _Venue(),
-                  "temple": temple, "ekiden": ekiden}
+                  "temple": temple, "ekiden": ekiden, **(optional or {})}
     fresh = {"usd": 1.0, "last_updated_at": now}
     gecko = {"xreserve-bridged-usdc-canton": fresh, "canton-network": {"usd": 0.1173, "last_updated_at": now},
              "bitcoin": {"usd": 83700, "last_updated_at": now},
@@ -196,15 +197,16 @@ def test_temple_cc_volume_is_credited_to_usdcx(tick):
     assert usdcx["volume_24h_usd"] >= 4_000_000
 
 
-# --- 3. Dollar routes' CC/USDCx leg includes Temple's book, and pays that market's fee ------------
+# --- 3. Dollar routes: each venue's best route on its own markets, every swap paying its fee -------
+# (batch 1 took a pool route's CC/USDCx leg on whichever venue was best, Temple's book included; batch 3
+# keeps every route inside its venue, the rule F set for all venues)
 
-def test_dollar_route_leg_fills_on_the_book_and_pays_its_fee(tick):
+def test_dollar_route_stays_inside_the_venue_and_pays_each_swap(tick):
     pair = next(p for p in tick["execution"]["pairs"] if p["key"] == "CBTC:USD")
     row = next(r for r in pair["rows"] if r["side"] == "buy" and r["size_usd"] == 10_000)
-    assert row["stable_leg"]["cantex"] == "temple"
+    assert row["swaps"] == {"cantex": 2, "temple": 1} and row["via"] == {"cantex": "CC"}
     cc_usd = D(str(tick["summary"]["cc_usd"]))
-    want = m.network_fee_usd("cantex", cc_usd) + m.network_fee_usd("temple", cc_usd)
-    assert row["fee_usd"]["cantex"] == pytest.approx(float(want))
+    assert row["fee_usd"]["cantex"] == pytest.approx(float(2 * m.network_fee_usd("cantex", cc_usd)))
 
 
 # --- 4. Metals against spot (Ekiden's index, market hours only); no stock-token references --------

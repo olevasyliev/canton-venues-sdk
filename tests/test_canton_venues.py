@@ -205,25 +205,33 @@ def test_book_round_trips_through_json():
     assert m.book_from_json(m.book_to_json(b, "USDCX")) == b
 
 
+def _dollar(hops: dict, token: str) -> m.DollarRoutes:
+    """Each venue's routes from USDCx to ``token`` on its own markets."""
+    return m.DollarRoutes({v: [m.Route(v, token, "USDCX", token, tuple(ps))] for v, hs in hops.items()
+                           if (ps := m.venue_paths(hs, "USDCX", token))}, {"USDCX": Decimal(1)})
+
+
 def test_dollar_routes_count_swaps_and_compare_like_for_like():
-    stable = {"cantex": cantex_pool("USDCx", 10_000_000, 1_220_000)}
-    pools = {"cantex": cantex_pool("CBTC", 10_000_000, Decimal("14.4"))}  # about $84.7K per CBTC
-    routes = m.DollarRoutes(pools, stable, {"rocky": _book()}, Decimal(1))
+    hops = {"cantex": [m.pool_hop(cantex_pool("USDCx", 10_000_000, 1_220_000)),
+                       m.pool_hop(cantex_pool("CBTC", 10_000_000, Decimal("14.4")))],  # about $84.7K per CBTC
+            "rocky": [m.book_hop(_book(), "CBTC", "USDCX")]}
+    routes = _dollar(hops, "CBTC")
     assert routes.venues == ["cantex", "rocky"]
-    assert routes.swaps("cantex") == 2 and routes.swaps("rocky") == 1
-    assert routes.buy("rocky", Decimal(101)) == 1
-    assert routes.sell("rocky", Decimal(1)) == 100
+    got, path = routes.buy("cantex", Decimal(1000))
+    assert len(path) == 2 and m.via(path) == "CC" and got > 0  # dollars to CC to CBTC, both on Cantex
+    assert routes.buy("rocky", Decimal(101)) == (1, routes.routes["rocky"][0].paths[0])
+    assert routes.sell("rocky", Decimal(1))[0] == 100
 
 
 def test_usd_scan_only_adds_trips_that_touch_the_book():
-    stable = {"cantex": cantex_pool("USDCx", 10_000_000, 1_220_000)}
-    pools = {"cantex": cantex_pool("X", 1_000_000, 1_000_000), "tradecraft": tc_pool("X", 1_000_000, 1_000_000)}
-    routes = m.DollarRoutes(pools, stable, {"rocky": _book()}, Decimal(1))
-    rows = m.usd_scan("X", routes, Decimal("0.122"))
+    hops = {v: [m.pool_hop(mk("USDCx", 10_000_000, 1_220_000)), m.pool_hop(mk("X", 1_000_000, 1_000_000))]
+            for v, mk in (("cantex", cantex_pool), ("tradecraft", tc_pool))}
+    hops["rocky"] = [m.book_hop(_book(), "X", "USDCX")]
+    rows = m.usd_scan("X", _dollar(hops, "X"), Decimal("0.122"))
     assert {(r["buy_on"], r["sell_on"]) for r in rows} == {
         ("cantex", "rocky"), ("rocky", "cantex"), ("tradecraft", "rocky"), ("rocky", "tradecraft")}
-    # a pool route is two swaps (its CC/USDCx leg costed as Cantex), the book one: three a trip
-    cost = {frozenset(("cantex", "rocky")): 0.86 * 2 + 1.5, frozenset(("tradecraft", "rocky")): 0.10 / 0.122 + 0.86 + 1.5}
+    # a pool route is two swaps on its own venue, each paying that venue's fee; the book one: three a trip
+    cost = {frozenset(("cantex", "rocky")): 0.86 * 2 + 1.5, frozenset(("tradecraft", "rocky")): 2 * 0.10 / 0.122 + 1.5}
     assert all(r["cost_cc"] == pytest.approx(cost[frozenset((r["buy_on"], r["sell_on"]))]) for r in rows)
 
 

@@ -185,26 +185,34 @@ def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> lis
     """What each venue returns at each size, both directions.
 
     ``mid`` (token per CC) only converts dollar sizes into token amounts, so
-    every venue is asked about exactly the same trade.
+    every venue is asked about exactly the same trade. A venue given as a ``Route`` takes its best
+    path after its network fee per swap; ``swaps`` and ``via`` say which.
     """
     rows = []
     for side in ("sell", "buy"):
         for size in SIZES_USD:
             cc_amount = Decimal(size) / cc_in_usd
             amount = cc_amount if side == "sell" else cc_amount * mid
-            outs = {v: p.out(side == "sell", amount) for v, p in pools.items()}
-            filled = {v: o for v, o in outs.items() if o > 0}  # a book that runs out returns 0
-            best = max(filled, key=filled.get)
             # what one unit received is worth: the token on a sell (``mid`` per CC), CC on a buy
             out_usd = cc_in_usd / mid if side == "sell" else cc_in_usd
+            picks = {v: _pick(p, side == "sell", amount, network_fee_usd(v, cc_in_usd) / out_usd)
+                     for v, p in pools.items()}
+            outs = {v: o for v, (o, _) in picks.items()}
+            filled = {v: o for v, o in outs.items() if o > 0}  # a book that runs out returns 0
+            best = max(filled, key=filled.get)
+            swaps = {v: len(picks[v][1]) for v in filled}
+            fair = amount * mid if side == "sell" else amount / mid  # at the blended mid, before fees
             rows.append({
                 "side": side,  # sell = sell CC for the token, buy = buy CC with it
                 "size_usd": size,
                 "amount_in": float(amount),
                 "out": {v: (float(o) if o > 0 else None) for v, o in outs.items()},
+                "cost_bps": {v: float((1 - o / fair) * 10_000) for v, o in filled.items()},
                 "best": best,
                 "edge_bps": runner_up_bps(filled),
-                **net_of_fees(filled, {v: network_fee_usd(v, cc_in_usd) for v in filled}, out_usd),
+                "swaps": swaps,
+                "via": {v: via(picks[v][1]) for v in filled if swaps[v] == 2},
+                **net_of_fees(filled, {v: network_fee_usd(v, cc_in_usd) * swaps[v] for v in filled}, out_usd),
             })
     return rows
 
@@ -425,54 +433,178 @@ def book_from_json(d: dict) -> BookVenue:
                      Decimal(str(d["quote_usd"])), Decimal(str(d["fee"])))
 
 
+# === the best route inside each venue ======================================
+# Every venue is asked the same thing: its best way, on its own markets, from one token to another in
+# one or two swaps (F 2026-10-14: the same rule for every venue). A pool venue may go through a second
+# pool of its own (Pool Party: CC to USDC.B to CBTC), an order-book venue places two orders (Temple: CC
+# to USDCx to CBTC), and each swap pays the venue's network fee. Before 2026-10-14 a CC trade was one
+# CC pool per venue, and a dollar trade took its CC/USDCx leg on whichever venue was best.
+
+
+@dataclass(frozen=True)
+class Hop:
+    """One market on one venue between two tokens (keys): a pool, with CC or without, or an order
+    book. ``swap(a_to_b, amount)`` is what comes out, 0 when the market cannot fill it."""
+
+    venue: str
+    a: str
+    b: str
+    mid: Decimal  # b per a, before fees
+    swap: Callable[[bool, Decimal], Decimal] = field(repr=False, compare=False)
+    market: str = ""  # a book's market name ("CBTC/USDCx"); "" for a pool
+    fee: Decimal = Decimal(0)  # a book's taker fee, for the page
+    usd: Decimal | None = None  # a pool's liquidity in dollars; None for a book or when unknown
+
+    def to(self, frm: str) -> str:
+        return self.b if frm == self.a else self.a
+
+    def out(self, frm: str, amount: Decimal) -> Decimal:
+        return self.swap(frm == self.a, amount) if amount > 0 else Decimal(0)
+
+    def rate(self, frm: str) -> Decimal:
+        return self.mid if frm == self.a else 1 / self.mid
+
+    def fingerprint(self) -> str:
+        return f"{self.venue}:{self.a}/{self.b}:{self.mid:.12g}"
+
+
+def pool_hop(p: VenuePool) -> Hop:
+    """A CC pool (or Temple's CC book, ``CCBook``) as a hop from CC to its token."""
+    return Hop(p.venue, CC, key(p.token), p.mid, p.out,
+               *((p.book.symbol, p.book.fee) if isinstance(p, CCBook) else ()))
+
+
+def book_hop(b: BookVenue, base: str, quote: str) -> Hop:
+    """An order book as a hop from its base to its quote token (keys)."""
+    def swap(sell_base: bool, amount: Decimal) -> Decimal:
+        got = b.sell_base(amount) if sell_base else b.buy_base(amount)
+        return got if got is not None else Decimal(0)
+    return Hop(b.venue, base, quote, (b.bids[0][0] + b.asks[0][0]) / 2, swap, b.symbol, b.fee)
+
+
+def walk(path: tuple, frm: str, amount: Decimal) -> Decimal:
+    """What ``amount`` of ``frm`` becomes after every hop of ``path`` in turn."""
+    for h in path:
+        amount = h.out(frm, amount)
+        frm = h.to(frm)
+    return amount
+
+
+def venue_paths(hops: list[Hop], frm: str, to: str, floor: Decimal = Decimal(0)) -> list[tuple[Hop, ...]]:
+    """Every way from ``frm`` to ``to`` on one venue's markets, in one swap or two (one-swap first).
+    A pool under ``floor`` dollars is no market here, except a CC pool asked directly (a venue's own
+    CC pool for the token was compared before routes existed, and the pages set thin ones aside)."""
+    deep = [h for h in hops if h.usd is None or h.usd >= floor]
+    one = [(h,) for h in hops if {h.a, h.b} == {frm, to} and (h in deep or CC in (h.a, h.b))]
+    two = [(h1, h2) for h1 in deep if frm in (h1.a, h1.b) and h1.to(frm) not in (frm, to)
+           for h2 in deep if h2 is not h1 and {h2.a, h2.b} == {h1.to(frm), to}]
+    return one + two
+
+
+@dataclass(frozen=True)
+class Route:
+    """One venue's ways between two tokens, asked like a pool: ``out(forward, amount)`` is its best
+    path's output before network fees, ``paths`` every way of one or two swaps. ``cc_reserve`` is its
+    direct CC pool's (0 without one), so it weighs in ``blended_mid`` as that pool would."""
+
+    venue: str
+    token: str  # display symbol of ``to``
+    frm: str
+    to: str
+    paths: tuple
+    cc_reserve: Decimal = Decimal(0)
+
+    @property
+    def mid(self) -> Decimal:
+        """``to`` per ``frm`` along its shortest path, before fees."""
+        r, f = Decimal(1), self.frm
+        for h in self.paths[0]:
+            r *= h.rate(f)
+            f = h.to(f)
+        return r
+
+    def quotes(self, forward: bool, amount: Decimal) -> list[tuple[Decimal, tuple]]:
+        """(output, path as walked) for every path; forward is ``frm`` to ``to``."""
+        start = self.frm if forward else self.to
+        return [(walk(p if forward else p[::-1], start, amount), p if forward else p[::-1]) for p in self.paths]
+
+    def best(self, forward: bool, amount: Decimal, fee_per_swap: Decimal = Decimal(0)) -> tuple[Decimal, tuple]:
+        """The path that keeps the most after ``fee_per_swap`` (in output units) per swap; (0, ()) when
+        none can fill."""
+        filled = [(o, p) for o, p in self.quotes(forward, amount) if o > 0]
+        if not filled:
+            return Decimal(0), ()
+        return max(filled, key=lambda q: q[0] - len(q[1]) * fee_per_swap)
+
+    def out(self, forward: bool, amount: Decimal) -> Decimal:
+        return self.best(forward, amount)[0]
+
+    def book(self) -> Hop | None:
+        """The order book its shortest path trades ``to`` on (None for a pool): what its liquidity is."""
+        return next((h for h in self.paths[0] if self.to in (h.a, h.b) and h.market), None)
+
+
+def _pick(p, forward: bool, amount: Decimal, fee_per_swap: Decimal) -> tuple[Decimal, tuple]:
+    """A venue's output and path for one trade: a ``Route`` picks its best path after its network fee
+    per swap; a plain pool or book is one swap."""
+    if isinstance(p, Route):
+        return p.best(forward, amount, fee_per_swap)
+    return p.out(forward, amount), (None,)
+
+
 class DollarRoutes:
-    """Buy or sell a token for dollars on each venue.
+    """Buy or sell a token for dollars on each venue, every venue by its best route on its own markets
+    (``Route``s from each dollar token it trades): one order on a book, a pool of the token against a
+    dollar token, or dollars to CC to the token through two of its own pools. ``dollar`` is what each
+    dollar token counts as (USDCx at its price, USDC.B at par while it holds its peg)."""
 
-    A pool route goes through CC: dollars (USDCx) to CC on the best CC/USDCx market, a pool or
-    Temple's book (``CCBook``), then CC to the token on that venue's pool, or back. A book route is
-    one order. Every venue is asked about the same dollar amount.
-    """
-
-    def __init__(self, pools: dict[str, VenuePool], stable: dict[str, VenuePool],
-                 books: dict[str, BookVenue], usdcx_usd: Decimal) -> None:
-        self.pools, self.stable, self.books, self.usdcx_usd = pools, stable, books, usdcx_usd
+    def __init__(self, routes: dict[str, list[Route]], dollar: dict[str, Decimal]) -> None:
+        self.routes = {v: rs for v, rs in routes.items() if rs}
+        self.dollar = dollar
 
     @property
     def venues(self) -> list[str]:
-        return sorted(self.pools) + sorted(self.books)
+        return sorted(self.routes)
 
-    def swaps(self, venue: str) -> int:
-        return 1 if venue in self.books else 2
+    @property
+    def books(self) -> dict[str, Hop]:
+        """Venues with a one-order book route, and that book."""
+        out = {}
+        for v, rs in self.routes.items():
+            hop = next((p[0] for r in rs for p in r.paths if len(p) == 1 and p[0].market), None)
+            if hop is not None:
+                out[v] = hop
+        return out
 
-    def _buy_leg(self, usd: Decimal) -> tuple[str, Decimal]:
-        leg, cc, _ = best_leg(self.stable, False, usd / self.usdcx_usd)
-        return leg, cc
+    def min_swaps(self, venue: str) -> int:
+        """The fewest swaps any of its routes takes."""
+        return min(len(p) for r in self.routes[venue] for p in r.paths)
 
-    def _sell_leg(self, venue: str, qty: Decimal) -> tuple[str, Decimal]:
-        leg, usdcx, _ = best_leg(self.stable, True, self.pools[venue].out(False, qty))
-        return leg, usdcx
+    def buy(self, venue: str, usd: Decimal, fee_per_swap: Decimal = Decimal(0)) -> tuple[Decimal, tuple]:
+        """(token received for ``usd`` dollars, path) on its best route after ``fee_per_swap`` tokens."""
+        best = (Decimal(0), ())
+        for r in self.routes.get(venue, []):
+            got = r.best(True, usd / self.dollar[r.frm], fee_per_swap)
+            if got[0] - len(got[1]) * fee_per_swap > best[0] - len(best[1]) * fee_per_swap:
+                best = got
+        return best
 
-    def leg(self, venue: str, side: str, amount: Decimal) -> str | None:
-        """The CC/USDCx market that fills a pool route's dollar leg (None for a book route), so the
-        route pays that market's network fee: ``amount`` is dollars on a buy, the token on a sell."""
-        if venue in self.books:
-            return None
-        return self._buy_leg(amount)[0] if side == "buy" else self._sell_leg(venue, amount)[0]
+    def sell(self, venue: str, qty: Decimal, fee_per_swap: Decimal = Decimal(0)) -> tuple[Decimal, tuple]:
+        """(dollars received for ``qty`` of the token, path) after ``fee_per_swap`` dollars a swap."""
+        best = (Decimal(0), ())
+        for r in self.routes.get(venue, []):
+            o, p = r.best(False, qty, fee_per_swap / self.dollar[r.frm])
+            o *= self.dollar[r.frm]
+            if o - len(p) * fee_per_swap > best[0] - len(best[1]) * fee_per_swap:
+                best = (o, p)
+        return best
 
-    def buy(self, venue: str, usd: Decimal) -> Decimal | None:
-        """Token received for ``usd`` dollars."""
-        if venue in self.books:
-            b = self.books[venue]
-            return b.buy_base(usd / b.quote_usd)
-        return self.pools[venue].out(True, self._buy_leg(usd)[1])
 
-    def sell(self, venue: str, qty: Decimal) -> Decimal | None:
-        """Dollars received for ``qty`` of the token."""
-        if venue in self.books:
-            b = self.books[venue]
-            got = b.sell_base(qty)
-            return None if got is None else got * b.quote_usd
-        return self._sell_leg(venue, qty)[1] * self.usdcx_usd
+def via(path: tuple) -> str | None:
+    """The token a two-swap path passes through (a key)."""
+    if len(path) != 2 or path[0] is None:
+        return None
+    return next(iter({path[0].a, path[0].b} & {path[1].a, path[1].b}))
 
 
 def usd_ladder(routes: DollarRoutes, price_usd: Decimal, cc_in_usd: Decimal) -> list[dict]:
@@ -482,24 +614,24 @@ def usd_ladder(routes: DollarRoutes, price_usd: Decimal, cc_in_usd: Decimal) -> 
         for size in SIZES_USD:
             usd = Decimal(size)
             qty = usd / price_usd
-            outs = {v: (routes.buy(v, usd) if side == "buy" else routes.sell(v, qty)) for v in routes.venues}
-            filled = {v: o for v, o in outs.items() if o is not None and o > 0}
+            unit = price_usd if side == "buy" else Decimal(1)  # dollars per unit received
+            picks = {v: (routes.buy(v, usd, network_fee_usd(v, cc_in_usd) / unit) if side == "buy"
+                         else routes.sell(v, qty, network_fee_usd(v, cc_in_usd))) for v in routes.venues}
+            filled = {v: o for v, (o, p) in picks.items() if o > 0}
             if not filled:
                 continue
             best = max(filled, key=filled.get)
             fair = qty if side == "buy" else usd  # what a trade at the Canton price would return
-            # a pool route is two swaps: the venue's own and the CC/USDCx leg, each with its network fee
-            legs = {v: routes.leg(v, side, usd if side == "buy" else qty) for v in filled if routes.swaps(v) == 2}
+            swaps = {v: len(picks[v][1]) for v in filled}
+            through = {v: via(picks[v][1]) for v in filled if swaps[v] == 2}
             rows.append({
                 "side": side, "size_usd": size, "amount_in": float(usd if side == "buy" else qty),
-                "out": {v: (float(o) if o is not None else None) for v, o in outs.items()},
+                "out": {v: (float(o) if o > 0 else None) for v, (o, _) in picks.items()},
                 "cost_bps": {v: float((1 - o / fair) * 10_000) for v, o in filled.items()},
                 "best": best,
                 "edge_bps": runner_up_bps(filled),
-                "stable_leg": legs,
-                **net_of_fees(filled, {v: network_fee_usd(v, cc_in_usd) + (network_fee_usd(legs[v], cc_in_usd)
-                                                                         if v in legs else 0)
-                                       for v in filled}, price_usd if side == "buy" else Decimal(1)),
+                "swaps": swaps, "via": through,
+                **net_of_fees(filled, {v: network_fee_usd(v, cc_in_usd) * swaps[v] for v in filled}, unit),
             })
     return rows
 
@@ -508,9 +640,9 @@ def usd_round_trip(routes: DollarRoutes, buy_on: str, sell_on: str, cc_in_usd: D
                    lo_usd: float = 10, hi_usd: float = 100_000, steps: int = 60) -> tuple[Decimal, Decimal]:
     """Dollars in and gross dollar gain at the best size: buy on one venue, sell on the other."""
     def gain(x: Decimal) -> Decimal:
-        qty = routes.buy(buy_on, x)
-        back = routes.sell(sell_on, qty) if qty else None
-        return (back - x) if back is not None else Decimal(-10**12)
+        qty = routes.buy(buy_on, x)[0]
+        back = routes.sell(sell_on, qty)[0] if qty else Decimal(0)
+        return (back - x) if back > 0 else Decimal(-10**12)
 
     grid = [Decimal(lo_usd * (hi_usd / lo_usd) ** (i / (steps - 1))) for i in range(steps)]
     gains = [gain(x) for x in grid]
@@ -537,14 +669,14 @@ def usd_scan(token: str, routes: DollarRoutes, cc_in_usd: Decimal) -> list[dict]
             if buy == sell or not ({buy, sell} & set(routes.books)):
                 continue  # pool-to-pool trips are already in ``scan``, priced in CC
             x, g = usd_round_trip(routes, buy, sell, cc_in_usd)
-            # a pool route is the venue's own swap plus the CC/USDCx leg, on whichever market fills it
-            qty = routes.buy(buy, x) or Decimal(0)
-            legs = [routes.leg(buy, "buy", x), routes.leg(sell, "sell", qty) if qty else None]
-            cost_cc = sum(swap_cost_cc(v, cc_in_usd) for v in (buy, sell))
-            cost_cc += sum(swap_cost_cc(leg, cc_in_usd) for leg in legs if leg)
+            # each venue's best route at that size, every swap paying its venue's network fee
+            qty, p_buy = routes.buy(buy, x)
+            p_sell = routes.sell(sell, qty)[1] if qty > 0 else ()
+            # a side that cannot fill at that size still costs its shortest route (the trip never clears)
+            cost_cc = ((len(p_buy) or routes.min_swaps(buy)) * swap_cost_cc(buy, cc_in_usd)
+                       + (len(p_sell) or routes.min_swaps(sell)) * swap_cost_cc(sell, cc_in_usd))
             net_usd = g - cost_cc * cc_in_usd
-            fp = "|".join(routes.books[v].fingerprint() if v in routes.books else fingerprint(routes.pools[v])
-                          for v in (buy, sell))
+            fp = "|".join(h.fingerprint() for h in (*p_buy, *p_sell))
             found.append({
                 "token": token, "buy_on": buy, "sell_on": sell,
                 "size_cc": float(x / cc_in_usd), "size_usd": float(x),

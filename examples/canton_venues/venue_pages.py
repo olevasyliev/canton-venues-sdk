@@ -89,7 +89,7 @@ CAVEATS = {
                "its depth), not in the token list."],
     "rocky": ["Taker fee 0.025% is assumed: Rocky publishes no fee schedule.",
               "Books quoted in USDC.B are valued at par ($1), not at USDC.B's pool price.",
-              "Dollar routes compare Rocky's USDCx books only."],
+              "Its USDC.B books count as dollars at par in dollar routes while USDC.B holds within 1% of $1."],
     "oneswap": ["Volume is not published, so OneSwap has no volume figure or volume rank.",
                 "Priced from reserves as a constant-product pool with a 0.30% fee."],
     "poolparty": ["Fee (0.30%) from CCTools; priced from reserves as a constant-product pool.",
@@ -375,6 +375,10 @@ def facts(data: dict) -> dict[str, dict]:
     # CC pools the collector reads but cannot quote (a token no venue names, a second pool for a
     # token): their liquidity is still 2x the CC reserve, so they count in every pool total
     unpriced = [{**p, "priced": False} for p in data["lp"].get("unpriced_pools") or []]
+    # pools of two tokens other than CC, valued at our prices of their tokens (none we can value: left
+    # out); before 2026-10-14 no total counted them (Pool Party ~$95K, OneSwap ~$78K that day)
+    others = [{**p, "priced": True, "other": True} for p in data["lp"].get("other_pools") or []
+              if p.get("tvl_usd") is not None]
     perps = data["perps"]["markets"]
     spot_total = data["venues"].get("spot_volume_24h_usd")
     cc_usd = _cc_usd(data)
@@ -391,7 +395,7 @@ def facts(data: dict) -> dict[str, dict]:
         perp_mkts.setdefault(p["venue"], []).append(p)
     tvl: dict[str, float] = {}
     pool_rows: dict[str, list] = {}
-    for p in [*pools, *unpriced]:
+    for p in [*pools, *unpriced, *others]:
         tvl[p["venue"]] = tvl.get(p["venue"], 0) + p["tvl_usd"]
         pool_rows.setdefault(p["venue"], []).append(p)
     tok_rows: dict[str, list] = {}
@@ -407,7 +411,8 @@ def facts(data: dict) -> dict[str, dict]:
         """Pool liquidity, or a book's dollars within 1% of mid; None when the data has none.
 
         ``market`` names the book a dollar route uses. tokens.json carries the depth of each
-        venue's deepest dollar book only, so a route through another book is unmeasured.
+        venue's deepest dollar book (its depth summed over all its books), so a route through another
+        book is unmeasured.
         """
         info = by_key.get(key, {}).get("venues", {}).get(venue)
         if not info:
@@ -434,8 +439,9 @@ def facts(data: dict) -> dict[str, dict]:
     for p in pairs:
         key = p.get("token") or p["key"]
         markets = {v: b["market"] for v, b in (p.get("books") or {}).items()}
-        swaps = p.get("swaps") or {}
         for r in p["rows"]:
+            # each venue's swaps on its best route at this size (two on a route inside the venue)
+            swaps = r.get("swaps") or p.get("swaps") or {}
             k = (p["kind"], r["size_usd"])
             outs = {v: o for v, o in r["out"].items() if o is not None and counted(key, v, markets.get(v))}
             real = {v: o for v, o in outs.items() if counted(key, v, markets.get(v), max(r["size_usd"],
@@ -481,7 +487,7 @@ def facts(data: dict) -> dict[str, dict]:
     # what each venue can lead, measured the same way for everyone
     tok_count = {v: len(token_split(xs)[0]) for v, xs in tok_rows.items()}
     pool_count: dict[str, int] = {}
-    for p in [*pools, *unpriced]:
+    for p in [*pools, *unpriced, *others]:
         if p["tvl_usd"] >= MIN_LIQUIDITY_USD:
             pool_count[p["venue"]] = pool_count.get(p["venue"], 0) + 1
     live_mkts = {v: [m for m in ms if (m["turnover_24h_usd"] or 0) >= MIN_PERP_TURNOVER_USD]
@@ -559,10 +565,15 @@ def facts(data: dict) -> dict[str, dict]:
             f["pool_priced"] = sum(1 for p in f["pools"] if p.get("priced", True))
             f["tvl"] = tvl[i]
             f["tvl_rank"], f["tvl_n"] = _rank(tvl, i)
+            n_cc = sum(1 for p in f["pools"] if not p.get("other"))
             if f["pool_priced"] < f["pool_n"]:
                 f["method"].append(
-                    f"{f['pool_n'] - f['pool_priced']} of its {f['pool_n']} CC pools pair CC with a token we cannot "
+                    f"{f['pool_n'] - f['pool_priced']} of its {n_cc} CC pools pair CC with a token we cannot "
                     "price; their liquidity is counted from the CC side (twice the CC reserve), like every pool's.")
+            if n_cc < f["pool_n"]:
+                f["method"].append(
+                    f"{f['pool_n'] - n_cc} of its {f['pool_n']} pools pair two tokens other than CC; their "
+                    "liquidity is both sides at our token prices (twice the side we price).")
         f["exec"] = {f"{s}:{z}": {"won": wins.get((s, z), {}).get(i, 0), "of": quoted[(s, z)].get(i, 0)}
                      for (s, z) in sorted(quoted) if quoted[(s, z)].get(i)}
         f["won_rows"] = won_rows.get(i, [])
@@ -727,9 +738,9 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
         add("tokens", "The most tokens", f"{tok_count[i]} tokens with $1K or more of liquidity", r, tok_count[i],
             fmt=lambda n: f"{n} tokens", big=str(tok_count[i]), cap="Tokens with $1K or more of liquidity")
     if r := _lead(pool_count, i):
-        add("pool_count", "The most CC pools", f"{pool_count[i]} pools with $1K or more in them",
+        add("pool_count", "The most pools", f"{pool_count[i]} pools with $1K or more in them",
             r, pool_count[i], fmt=lambda n: f"{n} pools", big=str(pool_count[i]),
-            cap="CC pools with $1K or more in them")
+            cap="Pools with $1K or more in them")
     if perp_id and (r := _lead({k: len(x) for k, x in live_mkts.items()}, perp_id)):
         ms = live_mkts[perp_id]
         add("perp_markets", "The most perp markets",
@@ -875,9 +886,11 @@ def token_facts(f: dict) -> dict:
 
 
 def pools_text(f: dict) -> str:
-    """"5 CC pools": every pool counts, priced or not (each from its CC side)."""
+    """"5 CC pools", or "9 pools" once pools of two other tokens count too: every pool counts, priced
+    or not."""
     n = f.get("pool_n", 0)
-    return f"{n} CC pool{'' if n == 1 else 's'}"
+    cc = "" if any(p.get("other") for p in f.get("pools") or []) else "CC "
+    return f"{n} {cc}pool{'' if n == 1 else 's'}"
 
 
 def headline(f: dict) -> dict:
@@ -1107,7 +1120,8 @@ def metric_note(m: str, f: dict) -> str:
         quotes = ", ".join(sorted({x["quote"] for x in f.get("perp_markets") or []})) or "the quote token"
         return f"Perps volume: 24h turnover in {quotes}, counted at $1."
     return {
-        "tvl": "Pool liquidity: twice each CC pool's CC reserve, at our CC price.",
+        "tvl": "Pool liquidity: twice each CC pool's CC reserve, at our CC price; a pool of two other "
+               "tokens at our prices of both (twice the one side we price).",
         "share": "Share: of the 24h spot volume of every Canton DEX with public market data.",
         "depth": "Book depth: dollars resting within 1% of mid on both sides of the venue's public order book.",
         "market": f"Largest market: {f['name']}'s own 24h volume per market.",
@@ -1939,7 +1953,7 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
                 for p in f["pools"] if p["tvl_usd"] >= 100][:20]
         parts.append(f"""  <section class="block">
     <h2>Pools</h2>
-    <p class="sub">CC pools by liquidity: twice the CC reserve, at our CC price, so a pool counts even when we cannot price its other token. Fee APR is the last 24h of LP fees over liquidity, annualised.</p>
+    <p class="sub">Pools by liquidity: a CC pool is twice its CC reserve at our CC price, so it counts even when we cannot price its other token; a pool of two other tokens is both sides at our prices (twice the side we price). Fee APR is the last 24h of LP fees over liquidity, annualised.</p>
     <div class="panel">{_table([("Pool", "l"), ("Liquidity", ""), ("Volume (24h)", ""), ("Fee", ""), ("Fee APR", "")], rows)}</div>
   </section>""")
 
@@ -2037,7 +2051,7 @@ def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None)
     body = f"""  <p class="crumbs"><a href="/">Canton Venues</a> / Venues</p>
   <div class="title" style="padding-top:4px"><h1>Canton venues</h1><p>Every Canton DEX with public market data, live. Sorted by 24h volume; click one for its page, its history and a card to share.</p></div>
   <div class="tablewrap"><table class="vt"><thead><tr><th class="l rank">#</th><th class="l">Venue</th><th class="l hide-sm">Type</th><th class="l hide-sm">Strongest fact</th><th>Volume (24h)</th><th class="hide-sm">Perps (24h)</th><th class="hide-sm">Liquidity</th><th class="hide-sm">Open interest</th><th class="hide-sm">Daily volume, 30 days</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
-  <p class="sub" style="margin-top:14px">Strongest fact: a ranking the venue tops by 10% or more, or the trades it prices best after network fees (most of those compared at one size); where it leads nothing, its CC pools. Markets under {e(money(MIN_LIQUIDITY_USD))} set aside. {e(scope_line(n))}{e(checked)} Volume is spot where the venue has a spot market. Liquidity is pool liquidity; where it says book depth, it is the dollars resting within 1% of mid on the venue's deepest public order book (for perps, among markets trading {e(money(MIN_PERP_TURNOVER_USD))}+ a day). A blank cell: the venue has no such market; n/a: it has one we cannot show.</p>{credit}
+  <p class="sub" style="margin-top:14px">Strongest fact: a ranking the venue tops by 10% or more, or the trades it prices best after network fees (most of those compared at one size); where it leads nothing, its pools. Markets under {e(money(MIN_LIQUIDITY_USD))} set aside. {e(scope_line(n))}{e(checked)} Volume is spot where the venue has a spot market. Liquidity is pool liquidity; where it says book depth, it is the dollars resting within 1% of mid on the venue's deepest public order book (for perps, among markets trading {e(money(MIN_PERP_TURNOVER_USD))}+ a day). A blank cell: the venue has no such market; n/a: it has one we cannot show.</p>{credit}
   <section class="block">
     <h2>Coming to Canton Venues</h2>
     <p class="sub">Trading on Canton, no public market data yet: {e(coming)}. Run one of these? <a href="/#contact">Get in touch</a>.</p>

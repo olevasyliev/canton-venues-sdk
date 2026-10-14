@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -96,6 +97,8 @@ STEPS = [
      "what": "A token in a pool is valued through its own venue's CC/USDCx pool (what it fetches in USDCx "
              "there), not at the market CC price; samples of every token but CC since the CC step are dropped."},
 ]
+# a pool of two other tokens holding less than this is no market for a route (the site's $1K floor)
+MIN_MARKET_USD = 1_000
 # why a CC pool is read but not quoted (lp.json unpriced_pools)
 UNNAMED = "token not named by any venue we price"
 SECOND_POOL = "a second pool for the same token"
@@ -150,6 +153,23 @@ def r(x, n=6):
     return None if x is None else round(float(x), n)
 
 
+def _book_of(p):
+    """The order book a venue's quote trades the token on (a ``Hop``), or None for a pool."""
+    if isinstance(p, m.Route):
+        return p.book()
+    return m.pool_hop(p) if isinstance(p, m.CCBook) else None
+
+
+def _tc_swap(st):
+    """A Tradecraft pool of two tokens, priced the venue's way (half its fee on each leg)."""
+    from cantonvenues.venues.tradecraft import swap_output
+
+    def swap(a_to_b: bool, amount: Decimal) -> Decimal:
+        rin, rout = (st.reserve_a, st.reserve_b) if a_to_b else (st.reserve_b, st.reserve_a)
+        return swap_output(rin, rout, amount, st.total_fee)
+    return swap
+
+
 def _gecko_usd(gecko: dict, gid: str, now: int) -> float | None:
     """A CoinGecko price, or None when it is missing or CoinGecko last updated it more than
     ``model.REFERENCE_MAX_AGE_S`` ago (KAG's stood still for up to 2 h 40 min in October)."""
@@ -184,6 +204,9 @@ class Collector:
         self.metal_seen: dict[str, tuple[Decimal, int]] = {}  # each index's last value and since when
         # each venue's own CC price this tick, from its CC/USDCx market (``_venue_usd``)
         self.cc_at: dict[str, Decimal] = {}
+        # pools read this tick that pair two tokens other than CC, with their reserves (lp.json
+        # other_pools) and, where both tokens are named, as a market for the routes inside the venue
+        self.other_pools: list[dict] = []
         self.http = httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "canton-venues/1"})
         self.tick_no = 0
         self.slow: dict = {}
@@ -330,7 +353,9 @@ class Collector:
         self.live.discard(name)
 
     async def _rocky_spot(self, books, cc_usd, usdcx_usd) -> tuple[dict, dict, float | None]:
-        """Rocky's deepest book per token: its dollar quote, the book itself, and Rocky spot volume."""
+        """Rocky's dollar-quoted books: per token its quote over every book (depth-weighted, the deepest
+        named), the books themselves ({token: {market: (book, quote key)}}, also the markets of the
+        routes inside Rocky, ``_hops``), and Rocky spot volume."""
         self.rocky_books = {}
         rocky = await self._venue("rocky")
         if rocky is None:
@@ -342,28 +367,32 @@ class Collector:
             # its pool premium (0.28% on 2026-10-04) made a CBTC trip through Rocky's USDC.B book look
             # like $150 per $100K when the same books at par lost $128.
             quote_usd = {q: (usdcx_usd if k == USDCX else Decimal(1)) for q, k in ROCKY_QUOTES.items()}
-            out: dict = {}
+            found: dict = {}
             kept: dict = {}
-            for mk in markets:  # price each token from its deepest dollar-quoted book
+            for mk in markets:  # every dollar-quoted book of a token we price
                 quote, k = m.key(mk.quote), m.key(mk.base)
                 if quote not in quote_usd or k not in books:
                     continue
                 book = await rocky.order_book(mk.symbol, 100)
                 if book.mid_price is None:
                     continue
-                depth = m.book_depth_usd(book.bids, book.asks, book.mid_price, quote_usd[quote])
-                if quote == USDCX and (k not in kept or depth > kept[k][1]):
-                    # dollar routes compare venues in USDCx, the pools' own dollar leg, so only a
-                    # USDCx book can carry one without a conversion we do not price
-                    kept[k] = (m.BookVenue("rocky", mk.symbol,
-                                           tuple((lv.price, lv.size) for lv in book.bids),
-                                           tuple((lv.price, lv.size) for lv in book.asks),
-                                           quote_usd[quote], m.BOOK_TAKER_FEE["rocky"]), depth)
-                if k not in out or depth > out[k]["depth_usd"]:
-                    out[k] = {"symbol": mk.symbol, "quote": ROCKY_QUOTES[quote],
-                              "price_usd": r(book.mid_price * quote_usd[quote], 8),
-                              "depth_usd": r(depth, 2),
-                              "spread_bps": r((book.best_ask.price / book.best_bid.price - 1) * 10_000, 2)}
+                bv = m.BookVenue("rocky", mk.symbol, tuple((lv.price, lv.size) for lv in book.bids),
+                                 tuple((lv.price, lv.size) for lv in book.asks), quote_usd[quote],
+                                 m.BOOK_TAKER_FEE["rocky"])
+                kept.setdefault(k, {})[mk.symbol] = (bv, ROCKY_QUOTES[quote])
+                found.setdefault(k, []).append({
+                    "symbol": mk.symbol, "quote": ROCKY_QUOTES[quote],
+                    "price_usd": book.mid_price * quote_usd[quote],
+                    "depth_usd": m.book_depth_usd(book.bids, book.asks, book.mid_price, quote_usd[quote]),
+                    "spread_bps": r((book.best_ask.price / book.best_bid.price - 1) * 10_000, 2)})
+            # a token's depth on Rocky is every one of its books (CBTC: a USDCx and a USDC.B book, each
+            # ~$35M within 1%, only the deeper one counted before 2026-10-14); the deepest is named
+            out: dict = {}
+            for k, bs in found.items():
+                top, depth = max(bs, key=lambda b: b["depth_usd"]), sum(b["depth_usd"] for b in bs)
+                out[k] = {**top, "price_usd": r(m.weighted_usd([(b["price_usd"], b["depth_usd"]) for b in bs])
+                                               or top["price_usd"], 8),
+                          "depth_usd": r(depth, 2), "books": len(bs)}
             volume = Decimal(0)
             books_usd: dict[str, float] = {}
             for mk in markets:  # volume over every book, a CBTC-quoted one through the CBTC price
@@ -377,8 +406,7 @@ class Collector:
                     out[k]["volume_24h_usd"] = r((out[k].get("volume_24h_usd") or 0) + float(t.turnover_24h * q_usd), 2)
             self.fresh["rocky"] = int(time.time())
             self.rocky_books = books_usd
-            return ({k: {"rocky": v} for k, v in out.items()}, {k: {"rocky": b} for k, (b, _) in kept.items()},
-                    float(volume))
+            return {k: {"rocky": v} for k, v in out.items()}, kept, float(volume)
         except Exception as exc:  # noqa: BLE001
             self._drop("rocky", exc)
             return {}, {}, None
@@ -571,7 +599,9 @@ class Collector:
     # === building the books ================================================
 
     def _books(self, cx_states, tc_states, tc_pools, lp_share_cx):
-        """symbol -> venue -> VenuePool, CC-paired pools only, matched by instrument."""
+        """symbol -> venue -> VenuePool, CC-paired pools only, matched by instrument. Starts this read's
+        list of other pools (``other_pools``) with Tradecraft's pools of two tokens."""
+        self.other_pools = []
         cc_inst = self._cc_instrument(cx_states)
         names: dict = {}
         for t in self.slow.get("tokens_info", []):
@@ -601,6 +631,10 @@ class Collector:
         tc_inst = {p.contract_id: (p.token_a, p.token_b) for p in tc_pools}
         for st in tc_states:
             if CC not in (st.token_a, st.token_b):
+                if st.amm_id in tc_inst and st.reserve_a > 0 and st.reserve_b > 0:
+                    a, b = (symbol_of.get(i) or names.get((i.admin, i.id), s)
+                            for i, s in zip(tc_inst[st.amm_id], (st.token_a, st.token_b)))
+                    self._other("tradecraft", a, b, st.reserve_a, st.reserve_b, _tc_swap(st))
                 continue
             tok_sym = st.token_b if st.token_a == CC else st.token_a
             cc_res, tok_res = st.reserves_for(CC, tok_sym)
@@ -648,9 +682,18 @@ class Collector:
             except Exception as exc:  # noqa: BLE001
                 self._drop(venue, exc)
                 continue
+            def name(tok):
+                if tok.admin:
+                    return by_inst.get((tok.admin, tok.id))
+                ids = by_id.get(tok.id, set())
+                return next(iter(ids)) if len(ids) == 1 else None
+
             for p in pools:
                 if cc_inst.id not in (p.token_a.id, p.token_b.id):
-                    continue  # pools without CC are not priced yet
+                    if p.reserve_a > 0 and p.reserve_b > 0:  # a pool of two other tokens
+                        self._other(venue, name(p.token_a) or p.symbol_a[:8], name(p.token_b) or p.symbol_b[:8],
+                                    p.reserve_a, p.reserve_b, p.output, named=bool(name(p.token_a) and name(p.token_b)))
+                    continue
                 cc_is_a = p.token_a.id == cc_inst.id
                 if venue == "oneswap" and (p.token_a if cc_is_a else p.token_b) != cc_inst:
                     continue  # an "Amulet" from another issuer is not CC
@@ -691,6 +734,25 @@ class Collector:
             if venue == "poolparty" and "Amulet" in vol:
                 by_key[key] = float(vol["Amulet"]) * float(cc_usd)
         return by_key, total
+
+    def _other(self, venue: str, a: str, b: str, ra, rb, swap, named: bool = True) -> None:
+        """A pool of two tokens other than CC: a market for the routes inside its venue (when both
+        tokens are named) and liquidity on its venue (``_other_json``)."""
+        self.other_pools.append({"venue": venue, "a": a, "b": b, "ra": ra, "rb": rb,
+                                 "hop": m.Hop(venue, m.key(a), m.key(b), rb / ra, swap) if named else None})
+
+    @staticmethod
+    def _other_tvl(p, prices) -> Decimal | None:
+        """A pool of two other tokens at our prices: both sides when both are priced, twice the priced
+        side when one is, None when neither is."""
+        sides = [res * prices[m.key(t)] for t, res in ((p["a"], p["ra"]), (p["b"], p["rb"])) if m.key(t) in prices]
+        return sum(sides) if len(sides) == 2 else 2 * sides[0] if sides else None
+
+    def _other_json(self, prices) -> list[dict]:
+        """Pools without CC (lp.json other_pools), valued by ``_other_tvl``."""
+        rows = [{"venue": p["venue"], "pair": f"{p['a']}/{p['b']}", "reason": "pairs two tokens, not CC",
+                 "tvl_usd": r(self._other_tvl(p, prices), 2)} for p in self.other_pools]
+        return sorted(rows, key=lambda x: -(x["tvl_usd"] or 0))
 
     def _unquoted(self, venue: str, token: str, cc_reserve, reason: str) -> None:
         if cc_reserve and cc_reserve > 0:
@@ -791,10 +853,12 @@ class Collector:
         ob, ob_books, rocky_spot_vol = await self._rocky_spot(books, cc_usd, usdcx_usd)
         for k, v in t_ob.items():
             ob.setdefault(k, {}).update(v)
-        for k, v in t_books.items():
-            ob_books.setdefault(k, {}).update(v)
+        for k, v in t_books.items():  # Temple's token books, quoted in USDCx, in Rocky's shape
+            for b in v.values():
+                ob_books.setdefault(k, {})[b.symbol] = (b, USDCX)
         perps = await self._perps(gecko, cc_usd, now)
         prices = self._prices(books, cc_usd, ob)
+        hops = self._hops(books, cc_markets, ob_books, prices)
 
         series = self._usd_series(now_ms, usdcx_usd)
         self._mark_steps(now)
@@ -803,8 +867,8 @@ class Collector:
 
         tokens = self._tokens(books, cc_usd, tickers, series, own, now_ms, ob, prices)
         premium = self._premium(books, cc_usd, gecko, ob, prices, now)
-        dollar = {k: m.DollarRoutes(books[k], cc_markets, b, usdcx_usd) for k, b in ob_books.items()}
-        cc_pairs = self._execution(cmp_books, cc_usd)
+        dollar = self._dollar_routes(books, hops, ob_books, prices, usdcx_usd)
+        cc_pairs = self._execution(self._cc_routes(books, hops), cc_usd)
         # CC/USDCx stays the default view; order-book tokens in dollars come right after it
         execution = cc_pairs[:1] + self._usd_execution(books, dollar, prices, cc_usd) + cc_pairs[1:]
         scan = m.scan({k: v for k, v in cmp_books.items() if len(v) > 1}, cc_usd)
@@ -837,20 +901,23 @@ class Collector:
                                                               "temple")},
                                             "min_usd": float(m.MIN_ROUTE_USD), "routes": scan})
         write_json(self.api / "desk.json", self.desk)
-        write_json(self.api / "lp.json", {"t": now, "pools": lp, "unpriced_pools": self._unpriced_json(cc_usd)})
+        write_json(self.api / "lp.json", {"t": now, "pools": lp, "unpriced_pools": self._unpriced_json(cc_usd),
+                                          "other_pools": self._other_json(prices)})
         write_json(self.api / "pools.json", {
             "t": now, "cc_usd": float(cc_usd),
             "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()},
-            # every book behind a dollar route is quoted in USDCx (see _rocky_spot); CC's own book on
-            # Temple sits under CC, so the MCP quote prices CC/USDCx on it too
-            "books": {k: {v: m.book_to_json(b, USDCX) for v, b in vs.items()} for k, vs in ob_books.items()}
-            | ({CC: {"temple": m.book_to_json(temple_cc_book, USDCX)}} if temple_cc_book is not None else {})})
+            # every dollar-quoted book by token and market (Rocky's in USDCx and USDC.B, Temple's in
+            # USDCx); CC's own book on Temple sits under CC, so the MCP quote prices CC/USDCx on it too
+            "books": {k: {name: m.book_to_json(b, q) for name, (b, q) in vs.items()} for k, vs in ob_books.items()}
+            | ({CC: {temple_cc_book.symbol: m.book_to_json(temple_cc_book, USDCX)}}
+               if temple_cc_book is not None else {})})
         write_json(self.api / "history.json", self.history)
         write_json(self.api / "venues.json", venues)
         write_json(self.api / "perps.json", {"t": now, "markets": perps})
         pages = {"venues": venues, "tokens": {"t": now, "tokens": tokens},
                  "execution": {"t": now, "pairs": execution},
-                 "lp": {"t": now, "pools": lp, "unpriced_pools": self._unpriced_json(cc_usd)},
+                 "lp": {"t": now, "pools": lp, "unpriced_pools": self._unpriced_json(cc_usd),
+                        "other_pools": self._other_json(prices)},
                  "perps": {"t": now, "markets": perps}, "summary": summary}
         try:  # one hourly reading of every venue's figures, for its page's charts
             live = {s: f for s, f in venue_pages.facts(pages).items() if f["status"] in venue_pages.LIVE}
@@ -1115,9 +1182,57 @@ class Collector:
             col.extend([None] * (n - len(col)))
         return rows
 
-    def _execution(self, books, cc_usd) -> list[dict]:
-        out = []
+    def _hops(self, books, cc_markets, ob_books, prices) -> dict[str, list]:
+        """Every market each venue has this tick, as ``m.Hop``s: its CC pools (Temple's CC book among
+        them), its order books, and its pools of two other tokens holding $1K or more at our prices (a
+        $353 Tradecraft USDCx/CBTC pool, its price far off, read as a $49 spread on a $10 trade). Each
+        pool carries its liquidity, so a route of two swaps skips one under the floor too."""
+        hops: dict[str, list] = {}
+        for k, pools in {**books, USDCX: cc_markets}.items():
+            for v, p in pools.items():
+                usd = p.depth_usd() if isinstance(p, m.CCBook) else 2 * p.cc_reserve * self.cc_usd_last
+                hops.setdefault(v, []).append(dataclasses.replace(m.pool_hop(p), usd=usd))
+        for p in self.other_pools:
+            if p["hop"] is not None and (tvl := self._other_tvl(p, prices) or 0) >= MIN_MARKET_USD:
+                hops.setdefault(p["venue"], []).append(dataclasses.replace(p["hop"], usd=tvl))
+        for k, bs in ob_books.items():
+            for b, quote in bs.values():
+                hops.setdefault(b.venue, []).append(m.book_hop(b, k, quote))
+        return hops
+
+    def _cc_routes(self, books, hops) -> dict[str, dict]:
+        """For each token: every venue's best route between CC and it, one or two swaps on its own
+        markets (``m.Route``), so a venue without a CC pool for the token still competes."""
+        out = {}
         for sym, pools in books.items():
+            label = next(iter(pools.values())).token
+            routes = {}
+            for v, hs in hops.items():
+                paths = m.venue_paths(hs, CC, sym, MIN_MARKET_USD)
+                if paths:
+                    routes[v] = m.Route(v, label, CC, sym, tuple(paths),
+                                        pools[v].cc_reserve if v in pools else Decimal(0))
+            out[sym] = routes
+        return out
+
+    def _dollar_routes(self, books, hops, ob_books, prices, usdcx_usd) -> dict:
+        """For each token with an order book somewhere: every venue's best route from a dollar token to
+        it on its own markets. USDC.B counts as a dollar at par while it holds within 1% of $1."""
+        dollar = {USDCX: usdcx_usd}
+        if "USDC.B" in prices and abs(prices["USDC.B"] - 1) <= Decimal("0.01"):
+            dollar["USDC.B"] = Decimal(1)
+        out = {}
+        for sym in sorted(ob_books):
+            label = next(iter(books[sym].values())).token
+            routes = {v: [m.Route(v, label, d, sym, tuple(paths)) for d in dollar
+                          if (paths := m.venue_paths(hs, d, sym, MIN_MARKET_USD))] for v, hs in hops.items()}
+            out[sym] = m.DollarRoutes(routes, dollar)
+        return out
+
+    def _execution(self, routes, cc_usd) -> list[dict]:
+        """A CC pair per token two or more venues can trade with CC, each by its best route."""
+        out = []
+        for sym, pools in routes.items():
             if len(pools) < 2:
                 continue
             mid = m.blended_mid(list(pools.values()))
@@ -1128,9 +1243,10 @@ class Collector:
                 "venues": sorted(pools),
                 "symbol": next(iter(pools.values())).token,
                 "mid": {v: r(p.mid, 12) for v, p in pools.items()},
-                # a venue that is one order on its book here (Temple's CC/USDCx), as a dollar pair names it
-                **({"books": bk} if (bk := {v: {"market": p.book.symbol, "fee": float(p.book.fee)}
-                                            for v, p in pools.items() if isinstance(p, m.CCBook)}) else {}),
+                # a venue that trades this token on an order book (Temple's CC/USDCx, its CBTC/USDCx
+                # after a CC/USDCx order), as a dollar pair names it
+                **({"books": bk} if (bk := {v: {"market": b.market, "fee": float(b.fee)}
+                                            for v, p in pools.items() if (b := _book_of(p))}) else {}),
                 "rows": rows,
                 "crossover_usd": {s: m.crossover_usd(rows, s, "cantex", "tradecraft")
                                   for s in ("sell", "buy")},
@@ -1138,15 +1254,17 @@ class Collector:
         return sorted(out, key=lambda p: (p["key"] != USDCX, p["key"]))
 
     def _usd_execution(self, books, dollar, prices, cc_usd) -> list[dict]:
-        """Tokens that also trade on an order book: every venue against dollars."""
+        """Tokens that also trade on an order book: every venue against dollars, by its best route."""
         out = []
         for sym, routes in sorted(dollar.items()):
+            if len(routes.venues) < 2:
+                continue
             rows = m.usd_ladder(routes, prices[sym], cc_usd)
             out.append({
                 "key": sym + ":USD", "kind": "usd", "token": sym,
                 "symbol": next(iter(books[sym].values())).token,
-                "venues": routes.venues, "swaps": {v: routes.swaps(v) for v in routes.venues},
-                "books": {v: {"market": b.symbol, "fee": float(b.fee)} for v, b in routes.books.items()},
+                "venues": routes.venues,
+                "books": {v: {"market": h.market, "fee": float(h.fee)} for v, h in routes.books.items()},
                 "rows": rows,
             })
         return out
