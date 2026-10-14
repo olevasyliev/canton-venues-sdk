@@ -136,6 +136,15 @@ def test_cc_price_follows_the_deep_book_not_the_thin_pool(tick):
     assert tick["pools"]["cc_usd"] == pytest.approx(cc)
 
 
+def test_usdcx_is_not_read_off_its_peg_by_the_pools_gap_to_the_book(tick):
+    # the pool quotes CC 0.68% above the book; valued at the book's CC price, the pool alone read
+    # USDCx 0.68% under $1 (live 14.10 16:15: +0.27%), a false peg reading on a $1.4M token
+    usdcx = next(t for t in tick["tokens"]["tokens"] if t["key"] == "USDCX")
+    assert usdcx["price_usd"] == pytest.approx(1.0, abs=2e-4)
+    row = next(a for a in tick["premium"]["assets"] if a["key"] == "USDCX")
+    assert abs(row["premium"]) < 2e-4
+
+
 def test_the_step_is_marked_once_in_the_history(tick, tmp_path):
     steps = {s["id"]: s for s in tick["history"]["steps"]}
     assert steps["cc-price-depth-weighted"]["keys"] == ["CC"] and steps["cc-price-depth-weighted"]["t"]

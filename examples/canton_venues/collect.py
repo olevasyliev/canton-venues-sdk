@@ -492,13 +492,17 @@ class Collector:
             "depth_1pct_usd": r(depth, 2) if depth is not None else None,
         }
 
-    def _prices(self, books, cc_usd, ob) -> dict[str, Decimal]:
-        """Each token's Canton price across every venue that prices it, weighted by depth."""
+    def _prices(self, books, cc_usd, ob, cc_books=()) -> dict[str, Decimal]:
+        """Each token's Canton price across every venue that prices it, weighted by depth. USDCx also
+        weighs the CC/USDCx order books (``cc_books``, Temple's) that price CC: valued at a CC price
+        that follows the book, the pools alone would read their gap to the book as USDCx off its peg."""
         out = {}
         for sym, pools in books.items():
             quotes = [(cc_usd / p.mid, m.amm_depth_usd(p, cc_usd)) for p in pools.values()]
             for info in ob.get(sym, {}).values():
                 quotes.append((Decimal(str(info["price_usd"])), Decimal(str(info["depth_usd"]))))
+            if sym == USDCX:
+                quotes += [(cc_usd / b.mid, b.depth_usd()) for b in cc_books]
             out[sym] = m.weighted_usd(quotes) or m.token_usd(list(pools.values()), cc_usd)
         return out
 
@@ -778,7 +782,7 @@ class Collector:
         for k, v in t_books.items():
             ob_books.setdefault(k, {}).update(v)
         perps = await self._perps(gecko, cc_usd, now)
-        prices = self._prices(books, cc_usd, ob)
+        prices = self._prices(books, cc_usd, ob, [p for p in cc_markets.values() if isinstance(p, m.CCBook)])
 
         series = self._usd_series(now_ms, usdcx_usd)
         self._mark_steps(now)
