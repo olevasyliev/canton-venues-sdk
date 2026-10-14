@@ -29,7 +29,7 @@ from decimal import Decimal
 
 import httpx
 
-from ..core.models import BookLevel, FundingRate, Market, OrderBook, Side, Ticker, Trade
+from ..core.models import BookLevel, FundingRate, Market, OrderBook, Side, Ticker, Trade, live_levels
 from ..core.venue import MarketDataAdapter, VenueRequestError
 
 BASE_URL = "https://api.rocky.exchange"
@@ -141,8 +141,8 @@ class RockyAdapter(MarketDataAdapter):
         return OrderBook(
             symbol=symbol,
             timestamp=_ts(stamp) if stamp else datetime.now(UTC),
-            bids=tuple(BookLevel(price=_dec(p), size=_dec(q)) for p, q in raw.get("bids", [])),
-            asks=tuple(BookLevel(price=_dec(p), size=_dec(q)) for p, q in raw.get("asks", [])),
+            bids=live_levels(BookLevel(price=_dec(p), size=_dec(q)) for p, q in raw.get("bids", [])),
+            asks=live_levels(BookLevel(price=_dec(p), size=_dec(q)) for p, q in raw.get("asks", [])),
         )
 
     async def recent_trades(self, symbol: str, limit: int = 50) -> list[Trade]:

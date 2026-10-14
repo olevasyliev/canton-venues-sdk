@@ -269,21 +269,25 @@ def run(published: dict, get: Get = http_get, now: datetime | None = None,
         lines.append("No weekly card published (api/v1/weekly.json is missing).")
     elif weekly is not None and now.timestamp() - weekly["end"] > STALE_WEEKLY_S:
         lines.append(f"Weekly card not regenerated: its week ended {(now.timestamp() - weekly['end']) / 86400:.1f} days ago.")
-    ts = [v.get("t", 0) for v in (published.get("venues") or {}).values()]
+    ts = {slug: v.get("t", 0) for slug, v in (published.get("venues") or {}).items()}
     if not ts:
         lines.append("No card figures published at all (venues/published.json is empty).")
-    elif now.timestamp() - max(ts) > STALE_CARDS_S:
-        lines.append(f"No card republished for {(now.timestamp() - max(ts)) / 3600:.1f} h.")
+    # venue by venue: one card held for days used to pass while any other card was fresh (max, not min)
+    for slug, t in sorted(ts.items()):
+        if now.timestamp() - t > STALE_CARDS_S:
+            lines.append(f"{html.escape(slug)} card not republished for {(now.timestamp() - t) / 3600:.1f} h.")
     for r in rows:
         if r["over"]:
             lines.append(f"{html.escape(r['venue'])} {r['figure']}: card {_usd(r['ours'])}, "
                          f"{html.escape(r['source'])} {_usd(r['theirs'])} ({r['gap'] * 100:+.0f}%, "
                          f"limit {r['limit'] * 100:.0f}%)")
-    if not lines:
+    if not lines and not failed:
         return None, rows
-    text = "<b>cantonvenues.com cross-check: figures disagree</b>\n" + "\n".join(lines)
+    # a source that did not answer is told even when nothing disagrees: a silent cross-check is not a pass
+    head = "figures disagree" if lines else "sources did not answer"
+    text = f"<b>cantonvenues.com cross-check: {head}</b>\n" + "\n".join(lines)
     if failed:
-        text += "\nNot checked (source did not answer): " + html.escape(", ".join(failed))
+        text += ("\n" if lines else "") + "Not checked (source did not answer): " + html.escape(", ".join(failed))
     return text, rows
 
 

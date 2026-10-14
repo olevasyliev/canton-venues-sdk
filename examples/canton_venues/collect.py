@@ -62,6 +62,14 @@ SLOW_EVERY = 3
 CORE = ("cantex", "tradecraft")
 # while Cantex does not answer, its last 24h volume and tickers stand in for this long
 CX_STATS_MAX_AGE_S = 3600
+# a slow cache past its limit is dropped, not shown as current (summary.json ``sources`` keeps each
+# one's last good read for the watchdog): CoinGecko's last answer stands in for a failed request this
+# long; Tradecraft's and Temple's 24h volumes and the candles an hour; DefiLlama six hours
+GECKO_MAX_AGE_S = 600
+VOLUME_MAX_AGE_S = 3600
+LLAMA_MAX_AGE_S = 6 * 3600
+# Temple's row reads "down" once its keyless settled volume has not been read for this long
+TEMPLE_MAX_AGE_S = 45 * 60
 HISTORY_KEEP_S = 8 * 24 * 3600
 DESK_KEEP = 400
 LLAMA = "https://api.llama.fi"
@@ -138,8 +146,18 @@ VENUES = [
 def write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, separators=(",", ":"), default=float))
+    # a NaN or infinite number fails here, loudly, instead of a file the page's JSON.parse rejects
+    tmp.write_text(json.dumps(data, separators=(",", ":"), default=float, allow_nan=False))
     os.replace(tmp, path)
+
+
+def _num(x) -> Decimal | None:
+    """A venue's number (string or number), or None when it is missing, null or not a number."""
+    try:
+        d = Decimal(str(x)) if x is not None and x != "" else None
+    except ArithmeticError:
+        return None
+    return d if d is not None and d.is_finite() else None
 
 
 def load_json(path: Path, default):
@@ -174,10 +192,11 @@ def _gecko_usd(gecko: dict, gid: str, now: int) -> float | None:
     """A CoinGecko price, or None when it is missing or CoinGecko last updated it more than
     ``model.REFERENCE_MAX_AGE_S`` ago (KAG's stood still for up to 2 h 40 min in October)."""
     row = gecko.get(gid) or {}
-    t = row.get("last_updated_at")
-    if row.get("usd") is None or t is None or now - t > m.REFERENCE_MAX_AGE_S:
+    t, usd = row.get("last_updated_at"), row.get("usd")
+    # a 0 or a non-number is no price (a 0 read as "unit mismatch, excluded" before 2026-10-14)
+    if not isinstance(usd, int | float) or usd <= 0 or t is None or now - t > m.REFERENCE_MAX_AGE_S:
         return None
-    return row["usd"]
+    return usd
 
 
 class Collector:
@@ -202,6 +221,11 @@ class Collector:
         self.rocky_books: dict[str, float] = {}  # each Rocky spot book's 24h turnover in dollars, this tick
         self.metal_spot: dict[str, Decimal] = {}  # gold and silver spot this tick (METALS), when usable
         self.metal_seen: dict[str, tuple[Decimal, int]] = {}  # each index's last value and since when
+        # each outside source's last good read (unix time), for summary.json and the watchdog
+        self.sources: dict[str, int] = {}
+        self.started = int(time.time())
+        self.usdcx_last = Decimal(1)  # CoinGecko's last good USDCx price
+        self.temple_error: str | None = None  # why Temple's keyed books were not read, when they were not
         # each venue's own CC price this tick, from its CC/USDCx market (``_venue_usd``)
         self.cc_at: dict[str, Decimal] = {}
         # pools read this tick that pair two tokens other than CC, with their reserves (lp.json
@@ -244,22 +268,25 @@ class Collector:
 
     async def _refresh_slow(self, tc_states, cantex_markets) -> None:
         """Candles, per-pool Tradecraft volume, DefiLlama. Each part fails alone."""
-        symbols = [mk["symbol"] for mk in cantex_markets if mk.get("source") == "cantex"]
+        symbols = [mk["symbol"] for mk in cantex_markets if mk.get("source") == "cantex" and mk.get("symbol")]
         try:
-            if symbols:  # none while Cantex is down: the last candles stay
+            if symbols:  # none while Cantex is down: the last candles stay, for their hour
                 self.slow["candles"] = await self.cantex.candles(symbols, 3600, timeout=40)
+                self.sources["candles"] = int(time.time())
         except Exception as exc:  # noqa: BLE001
             log.warning("candles: %s", exc)
-        try:
-            if tc_states:  # none while Tradecraft is down: its last volumes stay
-                vols = {}
-                for st in tc_states:
+        if tc_states:  # none while Tradecraft is down: its last volumes stay, for their hour
+            vols, failed = {}, 0
+            for st in tc_states:
+                try:  # one pool that will not answer is left out, not every pool's volume
                     v = await self.tradecraft.pool_volume_usd(st.token_a, st.token_b)
-                    vols[st.amm_id] = float(v.get("1d", 0))
+                    vols[st.amm_id] = float(v.get("1d") or 0)
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    log.warning("tradecraft volume %s: %r", st.amm_id, exc)
+            if vols:
                 self.slow["tc_volume"] = vols
-                self.fresh["tradecraft"] = int(time.time())
-        except Exception as exc:  # noqa: BLE001
-            log.warning("tradecraft volume: %s", exc)
+                self.sources["tc_volume"] = self.fresh["tradecraft"] = int(time.time())
         try:
             # the per-protocol daily breakdown feeds each venue page's volume history
             dex = await self._json(f"{LLAMA}/overview/dexs/Canton", {"excludeTotalDataChart": "true"})
@@ -299,9 +326,15 @@ class Collector:
         if temple is not None:
             try:
                 vol = await temple.settled_volume(24)
-                self.slow["temple_volume"] = {mk["symbol"]: float(mk["quote_volume"]) for mk in vol["markets"]}
+                markets = {}
+                for mk in vol["markets"]:
+                    try:  # one market that will not parse is left out, not Temple's whole volume
+                        markets[mk["symbol"]] = float(mk["quote_volume"])
+                    except (KeyError, TypeError, ValueError) as exc:
+                        log.warning("temple volume %s: %r", mk.get("symbol"), exc)
+                self.slow["temple_volume"] = markets
                 self.slow["temple_total"] = float(vol["total_volume_usd"])
-                self.fresh["temple"] = int(time.time())
+                self.sources["temple_volume"] = self.fresh["temple"] = int(time.time())
             except Exception as exc:  # noqa: BLE001
                 self._drop("temple", exc)
         try:
@@ -446,8 +479,11 @@ class Collector:
                 out[k] = {"temple": info}
                 kept[k] = {"temple": bv}
             self.temple_priced = bool(out)
+            if self.temple_priced:  # the keyed read, stamped apart from the keyless settled volume
+                self.sources["temple_book"], self.temple_error = int(time.time()), None
             return out, kept, cc, cc_book
         except Exception as exc:  # noqa: BLE001
+            self.temple_error = f"{type(exc).__name__}: {exc}"[:200]  # a key that stops working is seen
             self._drop("temple", exc)
             return {}, {}, None, None
 
@@ -481,15 +517,17 @@ class Collector:
         if rocky is not None:
             try:
                 markets = {mk.symbol: mk for mk in await rocky.markets()}
+                read = []  # kept only once the whole read succeeds: a failure halfway shows the venue down
                 for t in await rocky.tickers():
                     mk = markets.get(t.symbol)
                     if mk is None:
                         continue
                     book = await rocky.order_book(t.symbol, 20)
                     bid, ask = book.best_bid, book.best_ask
-                    rows.append(self._perp_row("rocky_perp", t.symbol, mk.base, mk.quote, t.last_price,
+                    read.append(self._perp_row("rocky_perp", t.symbol, mk.base, mk.quote or "?", t.last_price,
                                                None, None, None, None, t.turnover_24h, bid, ask,
                                                spot(mk.base), None))
+                rows += read
                 self.fresh["rocky_perp"] = int(time.time())
             except Exception as exc:  # noqa: BLE001
                 self._drop("rocky_perp", exc)
@@ -545,22 +583,29 @@ class Collector:
             out[sym] = m.weighted_usd(quotes) or m.token_usd(list(pools.values()), cc_usd)
         return out
 
+    def _fresh(self, source: str, now: int, limit: int = VOLUME_MAX_AGE_S) -> bool:
+        return now - self.sources.get(source, 0) <= limit
+
     def _venues(self, cx_volume_usd, rocky_spot_vol, perps, now) -> dict:
-        llama = {v["name"]: v["volume_24h"] for v in (self.slow.get("llama") or {}).get("venues", [])}
         perp_vol: dict[str, float] = {}
         for p in perps:
             perp_vol[p["venue"]] = perp_vol.get(p["venue"], 0) + (p["turnover_24h_usd"] or 0)
-        own = {"cantex": cx_volume_usd, "tradecraft": sum(self.slow.get("tc_volume", {}).values()) or None,
+        # a 24h volume read over an hour ago is unknown, not shown as current (it froze for days before
+        # 2026-10-14 when one pool or market stopped answering)
+        tc_vol = self.slow.get("tc_volume") if self._fresh("tc_volume", now) else None
+        own = {"cantex": cx_volume_usd, "tradecraft": sum(tc_vol.values()) if tc_vol else None,
                "rocky": rocky_spot_vol, **perp_vol}
-        if self.slow.get("temple_total") is not None:
-            own["temple"] = self.slow["temple_total"]
+        temple_live = self._fresh("temple_volume", now, TEMPLE_MAX_AGE_S)
+        own["temple"] = self.slow.get("temple_total") if temple_live else None
         if "poolparty" in self.live and self.slow.get("pp_volume") is not None:
             own["poolparty"] = self._pp_volume_usd(self.cc_usd_last)[1]
         rows = []
         for v in VENUES:
-            vol = own.get(v["id"]) if v["id"] in own else llama.get(v.get("llama"))
+            vol = own.get(v["id"])
             live = (v["status"] != "priced" or v["id"] in self.live
                     or (v["id"] in CORE and v["id"] not in self.down))
+            if v["id"] == "temple":  # Temple can read down too: its settled volume not read for 45 min
+                live = temple_live
             status = v["status"] if live else "down"
             note = v["note"]
             if v["id"] == "temple" and self.temple_priced:
@@ -569,7 +614,7 @@ class Collector:
             rows.append({k: v[k] for k in ("id", "name", "kind")} | {
                 "note": note, "status": status,
                 "volume_24h_usd": r(vol, 2) if vol is not None else None})
-            if v["id"] == "temple" and self.slow.get("temple_volume"):
+            if v["id"] == "temple" and temple_live and self.slow.get("temple_volume"):
                 # Temple's own list of markets that settled in 24h, so a page can say how many we price
                 rows[-1]["markets_24h"] = sorted(self.slow["temple_volume"])
                 # and each one's settled volume in its quote token, as Temple reports it
@@ -590,11 +635,17 @@ class Collector:
         ids = sorted({g for g, _ in m.REFERENCES.values() if not g.startswith("spot:")}
                      | {USDCX_GECKO} | set(PERP_SPOT.values()))
         try:
-            return await self._json(GECKO, {"ids": ",".join(ids), "vs_currencies": "usd",
-                                            "include_24hr_change": "true", "include_last_updated_at": "true"})
+            got = await self._json(GECKO, {"ids": ",".join(ids), "vs_currencies": "usd",
+                                           "include_24hr_change": "true", "include_last_updated_at": "true"})
+            if isinstance(got, dict) and got:
+                self.sources["gecko"] = int(time.time())
+                return got
+            raise ValueError("an empty answer")
         except Exception as exc:  # noqa: BLE001
             log.warning("coingecko: %s", exc)
-            return self.slow.get("gecko_last", {})
+            # the last answer stands in for a few minutes only; past that every reference is missing
+            fresh = time.time() - self.sources.get("gecko", 0) <= GECKO_MAX_AGE_S
+            return self.slow.get("gecko_last", {}) if fresh else {}
 
     # === building the books ================================================
 
@@ -691,7 +742,7 @@ class Collector:
             for p in pools:
                 if cc_inst.id not in (p.token_a.id, p.token_b.id):
                     if p.reserve_a > 0 and p.reserve_b > 0:  # a pool of two other tokens
-                        self._other(venue, name(p.token_a) or p.symbol_a[:8], name(p.token_b) or p.symbol_b[:8],
+                        self._other(venue, name(p.token_a) or (p.symbol_a or "?")[:8], name(p.token_b) or (p.symbol_b or "?")[:8],
                                     p.reserve_a, p.reserve_b, p.output, named=bool(name(p.token_a) and name(p.token_b)))
                     continue
                 cc_is_a = p.token_a.id == cc_inst.id
@@ -704,8 +755,10 @@ class Collector:
                     names = by_id.get(tok.id, set())
                     sym = next(iter(names)) if len(names) == 1 else None
                 cc_res, tok_res = (p.reserve_a, p.reserve_b) if cc_is_a else (p.reserve_b, p.reserve_a)
+                if cc_res <= 0 or tok_res <= 0:  # listed before it is funded, or drained: no price
+                    continue
                 if sym is None:  # a token no venue we price can name: not quoted, still liquidity
-                    self._unquoted(venue, (p.symbol_b if cc_is_a else p.symbol_a)[:8], cc_res, UNNAMED)
+                    self._unquoted(venue, ((p.symbol_b if cc_is_a else p.symbol_a) or "?")[:8], cc_res, UNNAMED)
                     continue
                 prev = books.get(m.key(sym), {}).get(venue)
                 if prev is not None:
@@ -764,11 +817,20 @@ class Collector:
                         "tvl_usd": round(float(2 * p["cc_reserve"] * cc_usd), 2)} for p in self.unpriced),
                       key=lambda x: -x["tvl_usd"])
 
+    def _usdcx(self, gecko: dict) -> Decimal:
+        """USDCx in dollars from CoinGecko: a positive number, else the last good one (a null or a 0
+        stopped every tick before 2026-10-14)."""
+        got = _num((gecko.get(USDCX_GECKO) or {}).get("usd"))
+        if got is not None and got > 0:
+            self.usdcx_last = got
+        return self.usdcx_last
+
     def _usd_series(self, now_ms: int, usdcx_usd: Decimal) -> dict[str, list]:
         """Hourly dollar series per token from Cantex candles (X-CC times CC-USDCX). A market whose last
         bar ended over ``m.CHANGE_MAX_AGE_MS`` ago is left out, so its token falls back to our own
         five-minute samples: a pool that stopped trading keeps its last candle for days."""
-        candles = self.slow.get("candles") or {}
+        fresh_read = time.time() - self.sources.get("candles", 0) <= VOLUME_MAX_AGE_S
+        candles = (self.slow.get("candles") or {}) if fresh_read else {}
         base = next((v for k, v in candles.items() if k.upper() == "CC-USDCX"), None)
         fresh = lambda bars: bars and now_ms - (max(c.start_ms for c in bars) + 3_600_000) <= m.CHANGE_MAX_AGE_MS  # noqa: E731
         if not fresh(base):
@@ -789,6 +851,14 @@ class Collector:
     # === one tick ==========================================================
 
     async def tick(self) -> None:
+        """One tick. ``tick_no`` advances even when it fails: a failed slow tick used to repeat the slow
+        refresh (40 s of candles, a call per Tradecraft pool) on every tick until it passed."""
+        try:
+            await self._tick()
+        finally:
+            self.tick_no += 1
+
+    async def _tick(self) -> None:
         started = time.monotonic()
         now = int(time.time())
         now_ms = now * 1000
@@ -829,11 +899,11 @@ class Collector:
         if gecko:
             self.slow["gecko_last"] = gecko
 
-        fees_cc = Decimal(cx_volume.get("fees_cc") or 0)
-        lp_share_cx = Decimal(cx_volume["lp_fees_cc"]) / fees_cc if fees_cc else Decimal("0.9")
+        fees_cc, lp_fees_cc = _num(cx_volume.get("fees_cc")), _num(cx_volume.get("lp_fees_cc"))
+        lp_share_cx = lp_fees_cc / fees_cc if fees_cc and lp_fees_cc is not None else Decimal("0.9")
         books = self._books(cx_states, tc_states, tc_pools, lp_share_cx)
         await self._reserve_venues(books, cx_states)
-        usdcx_usd = Decimal(str(gecko.get(USDCX_GECKO, {}).get("usd", 1)))
+        usdcx_usd = self._usdcx(gecko)
         stable = books.get(USDCX)
         if not stable:
             raise RuntimeError("no CC/USDCx pool on any venue")
@@ -882,7 +952,6 @@ class Collector:
                                 time.monotonic() - started)
         venues = self._venues(summary["cantex_24h"]["volume_usd"], rocky_spot_vol, perps, now)
 
-        write_json(self.api / "summary.json", summary)
         write_json(self.api / "tokens.json", {"t": now, "tokens": tokens})
         write_json(self.api / "premium.json", {"t": now, "assets": premium})
         write_json(self.api / "execution.json", {"t": now, "sizes_usd": list(m.SIZES_USD),
@@ -936,8 +1005,10 @@ class Collector:
         if not self.down:  # alerts and the channel's post of the day wait for a tick with every core venue
             await self._alerts(tokens, premium, scan, now)
             await self._morning(tokens)
-        self.tick_no += 1
-        log.info("tick %d: %d tokens, %d on 2 venues, %d routes clear, %.1fs", self.tick_no,
+        # the tick's heartbeat, written last: a fresh ``t`` means every file above was written (the
+        # watchdog reads it; a tick that failed earlier leaves the last one, then marks it an error)
+        write_json(self.api / "summary.json", summary)
+        log.info("tick %d: %d tokens, %d on 2 venues, %d routes clear, %.1fs", self.tick_no + 1,
                  len(tokens), sum(len(v) > 1 for v in books.values()),
                  sum(s["clears"] for s in scan), time.monotonic() - started)
 
@@ -1067,9 +1138,9 @@ class Collector:
         for t in tickers:
             base, target = m.key(t["base_currency"]), m.key(t["target_currency"])
             if target == CC:
-                vol_cx[base] = vol_cx.get(base, 0) + float(t["target_volume"]) * float(cc_usd)
+                vol_cx[base] = vol_cx.get(base, 0) + float(_num(t.get("target_volume")) or 0) * float(cc_usd)
             elif base == CC:
-                vol_cx[target] = vol_cx.get(target, 0) + float(t["base_volume"]) * float(cc_usd)
+                vol_cx[target] = vol_cx.get(target, 0) + float(_num(t.get("base_volume")) or 0) * float(cc_usd)
         tc_vol = self.slow.get("tc_volume", {})
         pp_vol, _ = self._pp_volume_usd(cc_usd)
         # Temple quotes everything in USDCx, which the settled-volume route already reports in dollars.
@@ -1094,7 +1165,7 @@ class Collector:
                 venues[v] = {"price_usd": info["price_usd"], "liquidity_usd": info["depth_usd"],
                              "depth_1pct_usd": info["depth_usd"], "market": info["symbol"],
                              "spread_bps": info["spread_bps"]}
-                vol += info["volume_24h_usd"] or 0
+                vol += info.get("volume_24h_usd") or 0  # a book with no ticker row yet has none
             if "tradecraft" in pools:
                 vol += sum(v for k, v in tc_vol.items()
                            if k.upper().replace("TC ", "").replace(" LP", "") in
@@ -1315,7 +1386,8 @@ class Collector:
             pair = {m.key(t["base_currency"]), m.key(t["target_currency"])}
             if CC in pair:
                 other = (pair - {CC}).pop() if len(pair) > 1 else CC
-                v = float(t["target_volume"] if m.key(t["target_currency"]) == CC else t["base_volume"])
+                v = float(_num(t.get("target_volume") if m.key(t["target_currency"]) == CC
+                               else t.get("base_volume")) or 0)
                 cx_vol[other] = cx_vol.get(other, 0) + v * float(cc_usd)
         tc_vol = self.slow.get("tc_volume", {})
         pp_vol, _ = self._pp_volume_usd(cc_usd)
@@ -1337,8 +1409,20 @@ class Collector:
                 })
         return sorted(rows, key=lambda x: -x["tvl_usd"])
 
+    def _optional_down(self, now: int) -> dict[str, int]:
+        """Each venue read every tick, other than the core two, that has not been read for 10 min: the
+        time of its last good read (the start, if none since)."""
+        out = {}
+        for v in self.optional:
+            last = self.fresh.get(v) or self.started
+            if v != "temple" and now - last > 600:
+                out[v] = last
+        return out
+
     def _summary(self, cc_usd, cx_volume, gecko, series, now_ms, books, now, took) -> dict:
         cc_series = series.get(CC) or self._own_series().get(CC, [])
+        volume_cc, swaps = _num(cx_volume.get("volume_cc")), _num(cx_volume.get("swap_count"))
+        llama = self.slow.get("llama")
         return {
             "t": now,
             "took_s": round(took, 1),
@@ -1347,16 +1431,24 @@ class Collector:
             "cc_change_24h": r(m.change(cc_series, now_ms, 86400_000)),
             "cc_global_usd": r(_gecko_usd(gecko, "canton-network", now), 8),
             "cc_image": self.slow.get("images", {}).get(CC),
-            "cantex_24h": {"volume_cc": r(cx_volume.get("volume_cc"), 2),
-                           "volume_usd": r(Decimal(cx_volume.get("volume_cc", 0)) * cc_usd, 2),
-                           "swaps": int(Decimal(cx_volume.get("swap_count", 0))),
-                           "fees_cc": r(cx_volume.get("fees_cc"), 2)},
-            "ecosystem": self.slow.get("llama"),
+            # unknown (Cantex not read for over an hour, or a field missing) is None, never $0 or 0 swaps
+            "cantex_24h": {"volume_cc": r(volume_cc, 2),
+                           "volume_usd": r(volume_cc * cc_usd, 2) if volume_cc is not None else None,
+                           "swaps": int(swaps) if swaps is not None else None,
+                           "fees_cc": r(_num(cx_volume.get("fees_cc")), 2)},
+            # DefiLlama's figures, while their read is under six hours old
+            "ecosystem": llama if llama and now - llama.get("t", 0) <= LLAMA_MAX_AGE_S else None,
             "tokens": len(books),
             "on_two_venues": sum(len(v) > 1 for v in books.values()),
             "venues_priced": [v for v in CORE if v not in self.down] + sorted(self.live),
             # a core venue left out since this time (watchdog.py tells the owner after 30 min)
             "down_since": dict(self.down),
+            # any other venue read every tick, out since its last good read; Temple's keyed books, and
+            # each outside source's last good read (the watchdog's age limits)
+            "optional_down": self._optional_down(now),
+            "temple_priced": self.temple_priced,
+            **({"temple_error": self.temple_error} if self.temple_error else {}),
+            "sources": dict(sorted({**self.sources, **({"llama": llama["t"]} if llama else {})}.items())),
         }
 
 

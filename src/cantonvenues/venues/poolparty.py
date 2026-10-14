@@ -22,6 +22,7 @@ Venue-shape notes:
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
 import httpx
@@ -29,6 +30,8 @@ import httpx
 from ..core.models import Instrument
 from ..core.venue import VenueRequestError
 from .reserves import ReservePool
+
+log = logging.getLogger("cantonvenues")
 
 BASE_URL = "https://api-mainnet.cantonwallet.com/canton/pool-party/public/v1"
 ASSUMED_FEE = Decimal("0.003")
@@ -77,10 +80,14 @@ class PoolPartyPublicData:
         raw = await self._get("/tvl")
         out = []
         for name, reserves in (raw.get("pools") or {}).items():
-            if len(reserves) != 2:
+            if not isinstance(reserves, dict) or len(reserves) != 2:
                 continue
             (a, ra), (b, rb) = sorted(reserves.items(), key=lambda kv: name.find(kv[0]))
-            ra, rb = Decimal(str(ra)), Decimal(str(rb))
+            try:  # one malformed row is skipped, not the whole venue
+                ra, rb = Decimal(str(ra)), Decimal(str(rb))
+            except ArithmeticError as exc:
+                log.warning("poolparty: pool %s skipped: %r", name, exc)
+                continue
             if ra <= 0 or rb <= 0:
                 continue
             out.append(ReservePool(
@@ -93,5 +100,10 @@ class PoolPartyPublicData:
     async def volume(self, period: str = "24h") -> dict[str, dict[str, Decimal]]:
         """Per pool, volume in each token's own units over ``period`` (24h or 7d)."""
         raw = await self._get("/volume", {"period": period})
-        return {name: {tok: Decimal(str(v)) for tok, v in (p.get("volume") or {}).items()}
-                for name, p in (raw.get("perPool") or {}).items()}
+        out: dict[str, dict[str, Decimal]] = {}
+        for name, p in (raw.get("perPool") or {}).items():
+            try:  # a pool whose volume will not parse is left out, not every pool (a null, 2026-10-14)
+                out[name] = {tok: Decimal(str(v)) for tok, v in ((p or {}).get("volume") or {}).items()}
+            except (ArithmeticError, AttributeError) as exc:
+                log.warning("poolparty: volume of %s skipped: %r", name, exc)
+        return out

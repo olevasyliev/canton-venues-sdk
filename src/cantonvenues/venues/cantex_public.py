@@ -195,11 +195,14 @@ class CantexPublicData(PoolDataAdapter):
     async def tokens(self) -> list[dict]:
         """Every token Cantex knows, with its CoinGecko id where it has one."""
         raw = await self._get("/tokens/info")
-        return [t["info"] for t in raw["tokens"]]
+        # an entry missing its instrument or symbol names nothing and is left out (a null info, 2026-10-14)
+        need = ("instrument_admin", "instrument_id", "instrument_symbol")
+        return [t["info"] for t in raw.get("tokens") or [] if isinstance(t, dict) and isinstance(t.get("info"), dict)
+                and all(t["info"].get(k) for k in need)]
 
     async def volume(self) -> dict:
         """Swap volume, fees and swap count over the trailing 24 hours (in CC)."""
-        return (await self._get("/volume"))["data"]
+        return (await self._get("/volume")).get("data") or {}
 
     async def stats(self) -> dict:
         """Daily CC volume series, TVL and active-trader counts."""
@@ -208,11 +211,13 @@ class CantexPublicData(PoolDataAdapter):
     async def tickers(self) -> list[dict]:
         """CoinGecko-standard tickers: last price and 24h volume per pair."""
         raw = await self._get("/coingecko/tickers")
-        return raw if isinstance(raw, list) else raw.get("tickers", [])
+        rows = raw if isinstance(raw, list) else raw.get("tickers", [])
+        # a row without both currencies names no pair; it is left out
+        return [t for t in rows if isinstance(t, dict) and t.get("base_currency") and t.get("target_currency")]
 
     async def markets(self) -> list[dict]:
         """Market symbols with their source (``cantex`` or ``external``)."""
-        return (await self._get("/markets/info"))["data"]["markets"]
+        return [mk for mk in (await self._get("/markets/info"))["data"]["markets"] if mk.get("symbol")]
 
     async def candles(self, symbols: list[str], period: int = 3600,
                       timeout: float = 30.0) -> dict[str, list[Candle]]:

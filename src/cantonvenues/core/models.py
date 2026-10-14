@@ -115,6 +115,12 @@ class BookLevel:
     size: Decimal
 
 
+def live_levels(levels) -> tuple[BookLevel, ...]:
+    """The levels a trade can fill: a price or size of 0 (a null or "" a venue sent, read as 0) is no
+    level. Walking a 0-price ask divides by zero (Rocky's CBTC-USDCX, replayed 2026-10-14)."""
+    return tuple(lv for lv in levels if lv.price > 0 and lv.size > 0)
+
+
 @dataclass(frozen=True)
 class OrderBook:
     """A depth snapshot. ``bids`` descend and ``asks`` ascend by price."""

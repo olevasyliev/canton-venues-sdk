@@ -13,6 +13,7 @@ batches, 300 in three and a half days, mostly $1-4 spreads.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from html import escape as esc
 
 from model import NO_SPOT, REFERENCES, STABLES
 
@@ -64,13 +65,13 @@ def evaluate(tokens: list[dict], premium: list[dict], scan: list[dict],
             side = "above" if p > 0 else "below"
             out.append(Alert(f"peg:{a['key']}:{side}", "peg",
                              f"{s} is {pct(p)} off its $1 peg on Canton (${a['canton_usd']:.4f}).",
-                             f"<b>{s}</b> is <b>{pct(p)}</b> off its $1 peg on Canton (${a['canton_usd']:.4f}).",
+                             f"<b>{esc(s)}</b> is <b>{pct(p)}</b> off its $1 peg on Canton (${a['canton_usd']:.4f}).",
                              abs(p) > LOUD_PEG and liq.get(a["key"], 0) >= LOUD_LIQUIDITY_USD))
         elif a["kind"] == "reference" and abs(p) > PREMIUM_LIMIT:
             side = "above" if p > 0 else "below"
             out.append(Alert(f"premium:{a['key']}:{side}", "premium",
                              f"{s} trades {pct(p)} vs {a['reference']} on Canton.",
-                             f"<b>{s}</b> trades <b>{pct(p)}</b> vs {a['reference']} on Canton.",
+                             f"<b>{esc(s)}</b> trades <b>{pct(p)}</b> vs {esc(a['reference'])} on Canton.",
                              abs(p) > LOUD_PREMIUM and (a["key"] == "CC" or liq.get(a["key"], 0) >= LOUD_LIQUIDITY_USD)))
     for r in scan:
         if r.get("clears"):
@@ -78,7 +79,7 @@ def evaluate(tokens: list[dict], premium: list[dict], scan: list[dict],
             out.append(Alert(f"route:{r['token']}:{r['buy_on']}", "route",
                              f"{name}: buy on {r['buy_on'].title()}, sell on {r['sell_on'].title()}, "
                              f"${r['size_usd']:,.0f} nets ${r['net_usd']:.2f} after costs.",
-                             f"<b>{name}</b>: buy on {r['buy_on'].title()}, sell on "
+                             f"<b>{esc(name)}</b>: buy on {r['buy_on'].title()}, sell on "
                              f"{r['sell_on'].title()}, ${r['size_usd']:,.0f} nets <b>${r['net_usd']:.2f}</b> after costs.",
                              r["net_usd"] >= LOUD_ROUTE_USD))
     for t in tokens:
@@ -90,7 +91,7 @@ def evaluate(tokens: list[dict], premium: list[dict], scan: list[dict],
             side = "up" if move > 0 else "down"
             out.append(Alert(f"move:{t['key']}:{side}", "move",
                              f"{sym[t['key']]} {pct(move)} in the last hour on Canton DEXes.",
-                             f"<b>{sym[t['key']]}</b> <b>{pct(move)}</b> in the last hour on Canton DEXes.",
+                             f"<b>{esc(sym[t['key']])}</b> <b>{pct(move)}</b> in the last hour on Canton DEXes.",
                              # a token with an outside price shows a real move as a premium; a big hourly
                              # move without one (eXAU +25% then -20% on 6 Oct) is a thin quote, not news;
                              # tokens that track an asset we have no spot price for (NO_SPOT) stay quiet too

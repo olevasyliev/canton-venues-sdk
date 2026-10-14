@@ -497,96 +497,99 @@ def facts(data: dict) -> dict[str, dict]:
     tracked_n = sum(1 for v in VENUES if (rows.get(v["rows"][0]) or {}).get("status") in LIVE)
     out = {}
     for v in VENUES:
-        ids = v["rows"]
-        main = rows.get(ids[0])
-        if main is None:
-            continue
-        f = {"venue": v, "id": ids[0], "name": v["name"], "status": main["status"], "cc_usd": cc_usd,
-             "tracked_n": tracked_n,
-             "kind": " + ".join(dict.fromkeys(rows[i]["kind"] for i in ids if i in rows)),
-             "keyed": ids[0] in KEYED_BOOKS,
-             "method": method_lines([rows[i]["note"] for i in ids if i in rows]
-                                    + [c for i in ids for c in CAVEATS.get(i.replace("_perp", ""), [])])}
-        i = ids[0]
-        if main["kind"] != "Perpetuals":
-            f["spot_volume"] = main["volume_24h_usd"]
-            f["spot_rank"], f["spot_n"] = _rank(spot_vol, i)
-            f["spot_share"] = (main["volume_24h_usd"] / spot_total
-                               if main["volume_24h_usd"] and spot_total else None)
-            f["kind_label"] = KIND_SHORT.get(main["kind"], main["kind"].lower())
-            f["kind_rank"], f["kind_n"] = _rank(kind_vol.get(main["kind"], {}), i)
-            if main["volume_24h_usd"]:
-                f["method"].append(volume_method(i, v["name"], cc_usd))
-        perp_id = next((x for x in ids if rows.get(x, {}).get("kind") == "Perpetuals"), None)
-        if perp_id:
-            f["perp_id"] = perp_id
-            f["perp_volume"] = perp_vol.get(perp_id)
-            f["perp_rank"], f["perp_n"] = _rank(perp_vol, perp_id)
-            f["perp_markets"] = perp_mkts.get(perp_id, [])
-            counts = {k: len(x) for k, x in perp_mkts.items()}
-            f["perp_mkt_rank"], f["perp_mkt_n"] = _rank(counts, perp_id)
-            oi = [m["open_interest_usd"] for m in f["perp_markets"] if m["open_interest_usd"] is not None]
-            f["open_interest"] = sum(oi) if oi else None
-            # a perps book's dollars within 1% of mid, its deepest market trading $1K+ a day (thin
-            # markets can carry a large resting quote nobody trades against)
-            deep = [x for x in f["perp_markets"] if x.get("depth_1pct_usd")
-                    and (x["turnover_24h_usd"] or 0) >= MIN_PERP_TURNOVER_USD]
-            if deep:
-                top = max(deep, key=lambda x: x["depth_1pct_usd"])
-                f["perp_depth"] = {"symbol": top["symbol"], "usd": top["depth_1pct_usd"]}
-            if f["perp_volume"]:
-                f["method"].append(f"Perps volume: 24h turnover in each market's quote token "
-                                   f"({', '.join(sorted({m['quote'] for m in f['perp_markets']}))}), counted at $1.")
-        f["tokens"] = sorted(tok_rows.get(i, []), key=lambda x: -(x.get("liquidity_usd") or 0))
-        # each spot market's own 24h volume, when the collector has it (Temple: settled volume per
-        # market; Rocky: each book's turnover in dollars), for the "Right now" chart
-        if main.get("markets_24h_usd"):
-            f["book_volume"] = dict(main["markets_24h_usd"])
-        # the venue's own market list, when the collector has one (Temple: every market that settled
-        # in the last 24h), so a card can say how many of them we price
-        listed = [s.partition("/")[0] for s in main.get("markets_24h") or []]
-        if listed:
-            f["listed"] = list(dict.fromkeys(listed))
-            f["listed_pairs"] = list(dict.fromkeys(main.get("markets_24h") or []))
-            ours = [x["symbol"] for x in f["tokens"] if x["symbol"] in f["listed"]]
-            if len(ours) < len(f["listed"]):
-                f["method"].append(f"{v['name']} had {len(f['listed'])} markets trading in the last 24h "
-                                   f"({', '.join(f['listed'])}); we price {len(ours)} of them as tokens "
-                                   f"({', '.join(ours)}).")
-        if f["tokens"]:
-            f["token_rank"], f["token_n"] = _rank({k: len(x) for k, x in tok_rows.items()}, i)
-            top = max(f["tokens"], key=lambda x: x.get("depth_1pct_usd") or 0)
-            f["deepest"] = {"symbol": top["symbol"], "usd": top.get("depth_1pct_usd"),
-                            "market": top.get("market")}
-            f["deep_rank"], f["deep_n"] = _rank(deepest, i)
-        if i in pool_rows:
-            f["pools"] = sorted(pool_rows[i], key=lambda x: -x["tvl_usd"])
-            f["pool_n"] = len(f["pools"])
-            f["pool_priced"] = sum(1 for p in f["pools"] if p.get("priced", True))
-            f["tvl"] = tvl[i]
-            f["tvl_rank"], f["tvl_n"] = _rank(tvl, i)
-            n_cc = sum(1 for p in f["pools"] if not p.get("other"))
-            if f["pool_priced"] < f["pool_n"]:
-                f["method"].append(
-                    f"{f['pool_n'] - f['pool_priced']} of its {n_cc} CC pools pair CC with a token we cannot "
-                    "price; their liquidity is counted from the CC side (twice the CC reserve), like every pool's.")
-            if n_cc < f["pool_n"]:
-                f["method"].append(
-                    f"{f['pool_n'] - n_cc} of its {f['pool_n']} pools pair two tokens other than CC; their "
-                    "liquidity is both sides at our token prices (twice the side we price).")
-        f["exec"] = {f"{s}:{z}": {"won": wins.get((s, z), {}).get(i, 0), "of": quoted[(s, z)].get(i, 0)}
-                     for (s, z) in sorted(quoted) if quoted[(s, z)].get(i)}
-        f["won_rows"] = won_rows.get(i, [])
-        f["quotes"] = quote_rows.get(i, [])
-        f["counts"] = {k: dict(t[i], next=max((x for x in t if x != i), key=lambda x: (t[x]["won"], t[x]["of"]),
-                                               default=None))
-                       for k, t in tally.items() if i in t}
-        f["leads"] = _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol.get(main["kind"], {}),
-                            perp_vol, tvl, tok_count, pool_count, live_mkts, tokens, pools, unpriced)
-        f["series"] = venue_series(v["slug"], f, data.get("history") or {})
-        f["near"] = _near(f, i, perp_id, spot_vol, kind_vol.get(main["kind"], {}), perp_vol, tvl,
-                          tok_count, pool_count, live_mkts, name_of)
-        out[v["slug"]] = f
+        try:  # one venue's odd value leaves that venue out, not every page (a perp's null quote, 2026-10-14)
+            ids = v["rows"]
+            main = rows.get(ids[0])
+            if main is None:
+                continue
+            f = {"venue": v, "id": ids[0], "name": v["name"], "status": main["status"], "cc_usd": cc_usd,
+                 "tracked_n": tracked_n,
+                 "kind": " + ".join(dict.fromkeys(rows[i]["kind"] for i in ids if i in rows)),
+                 "keyed": ids[0] in KEYED_BOOKS,
+                 "method": method_lines([rows[i]["note"] for i in ids if i in rows]
+                                        + [c for i in ids for c in CAVEATS.get(i.replace("_perp", ""), [])])}
+            i = ids[0]
+            if main["kind"] != "Perpetuals":
+                f["spot_volume"] = main["volume_24h_usd"]
+                f["spot_rank"], f["spot_n"] = _rank(spot_vol, i)
+                f["spot_share"] = (main["volume_24h_usd"] / spot_total
+                                   if main["volume_24h_usd"] and spot_total else None)
+                f["kind_label"] = KIND_SHORT.get(main["kind"], main["kind"].lower())
+                f["kind_rank"], f["kind_n"] = _rank(kind_vol.get(main["kind"], {}), i)
+                if main["volume_24h_usd"]:
+                    f["method"].append(volume_method(i, v["name"], cc_usd))
+            perp_id = next((x for x in ids if rows.get(x, {}).get("kind") == "Perpetuals"), None)
+            if perp_id:
+                f["perp_id"] = perp_id
+                f["perp_volume"] = perp_vol.get(perp_id)
+                f["perp_rank"], f["perp_n"] = _rank(perp_vol, perp_id)
+                f["perp_markets"] = perp_mkts.get(perp_id, [])
+                counts = {k: len(x) for k, x in perp_mkts.items()}
+                f["perp_mkt_rank"], f["perp_mkt_n"] = _rank(counts, perp_id)
+                oi = [m["open_interest_usd"] for m in f["perp_markets"] if m["open_interest_usd"] is not None]
+                f["open_interest"] = sum(oi) if oi else None
+                # a perps book's dollars within 1% of mid, its deepest market trading $1K+ a day (thin
+                # markets can carry a large resting quote nobody trades against)
+                deep = [x for x in f["perp_markets"] if x.get("depth_1pct_usd")
+                        and (x["turnover_24h_usd"] or 0) >= MIN_PERP_TURNOVER_USD]
+                if deep:
+                    top = max(deep, key=lambda x: x["depth_1pct_usd"])
+                    f["perp_depth"] = {"symbol": top["symbol"], "usd": top["depth_1pct_usd"]}
+                if f["perp_volume"]:
+                    f["method"].append(f"Perps volume: 24h turnover in each market's quote token "
+                                       f"({', '.join(sorted({m['quote'] or '?' for m in f['perp_markets']}))}), counted at $1.")
+            f["tokens"] = sorted(tok_rows.get(i, []), key=lambda x: -(x.get("liquidity_usd") or 0))
+            # each spot market's own 24h volume, when the collector has it (Temple: settled volume per
+            # market; Rocky: each book's turnover in dollars), for the "Right now" chart
+            if main.get("markets_24h_usd"):
+                f["book_volume"] = dict(main["markets_24h_usd"])
+            # the venue's own market list, when the collector has one (Temple: every market that settled
+            # in the last 24h), so a card can say how many of them we price
+            listed = [s.partition("/")[0] for s in main.get("markets_24h") or []]
+            if listed:
+                f["listed"] = list(dict.fromkeys(listed))
+                f["listed_pairs"] = list(dict.fromkeys(main.get("markets_24h") or []))
+                ours = [x["symbol"] for x in f["tokens"] if x["symbol"] in f["listed"]]
+                if len(ours) < len(f["listed"]):
+                    f["method"].append(f"{v['name']} had {len(f['listed'])} markets trading in the last 24h "
+                                       f"({', '.join(f['listed'])}); we price {len(ours)} of them as tokens "
+                                       f"({', '.join(ours)}).")
+            if f["tokens"]:
+                f["token_rank"], f["token_n"] = _rank({k: len(x) for k, x in tok_rows.items()}, i)
+                top = max(f["tokens"], key=lambda x: x.get("depth_1pct_usd") or 0)
+                f["deepest"] = {"symbol": top["symbol"], "usd": top.get("depth_1pct_usd"),
+                                "market": top.get("market")}
+                f["deep_rank"], f["deep_n"] = _rank(deepest, i)
+            if i in pool_rows:
+                f["pools"] = sorted(pool_rows[i], key=lambda x: -x["tvl_usd"])
+                f["pool_n"] = len(f["pools"])
+                f["pool_priced"] = sum(1 for p in f["pools"] if p.get("priced", True))
+                f["tvl"] = tvl[i]
+                f["tvl_rank"], f["tvl_n"] = _rank(tvl, i)
+                n_cc = sum(1 for p in f["pools"] if not p.get("other"))
+                if f["pool_priced"] < f["pool_n"]:
+                    f["method"].append(
+                        f"{f['pool_n'] - f['pool_priced']} of its {n_cc} CC pools pair CC with a token we cannot "
+                        "price; their liquidity is counted from the CC side (twice the CC reserve), like every pool's.")
+                if n_cc < f["pool_n"]:
+                    f["method"].append(
+                        f"{f['pool_n'] - n_cc} of its {f['pool_n']} pools pair two tokens other than CC; their "
+                        "liquidity is both sides at our token prices (twice the side we price).")
+            f["exec"] = {f"{s}:{z}": {"won": wins.get((s, z), {}).get(i, 0), "of": quoted[(s, z)].get(i, 0)}
+                         for (s, z) in sorted(quoted) if quoted[(s, z)].get(i)}
+            f["won_rows"] = won_rows.get(i, [])
+            f["quotes"] = quote_rows.get(i, [])
+            f["counts"] = {k: dict(t[i], next=max((x for x in t if x != i), key=lambda x: (t[x]["won"], t[x]["of"]),
+                                                   default=None))
+                           for k, t in tally.items() if i in t}
+            f["leads"] = _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol.get(main["kind"], {}),
+                                perp_vol, tvl, tok_count, pool_count, live_mkts, tokens, pools, unpriced)
+            f["series"] = venue_series(v["slug"], f, data.get("history") or {})
+            f["near"] = _near(f, i, perp_id, spot_vol, kind_vol.get(main["kind"], {}), perp_vol, tvl,
+                              tok_count, pool_count, live_mkts, name_of)
+            out[v["slug"]] = f
+        except Exception:  # noqa: BLE001
+            log.exception("venue %s left out of this build", v["slug"])
     return out
 
 
@@ -2101,33 +2104,37 @@ def build(out: Path, data: dict, t: int, cards: bool = True, look: str = "venue"
     shown = dict(heads)
     card_v = {}
     for s, f in list(all_facts.items()):
-        d = out / "venues" / s
-        card = d / "card.png"
-        if guard is not None:
-            figs = card_figures(f, heads[s], stats(f))
-            seen = [fresh[i] for i in f["venue"]["rows"] if fresh and i in fresh]
-            age = t - min(seen) if seen else None
-            why = guard.check(s, figs, t, age)
-            if why and (d / "index.html").exists():
-                log.warning("venue %s held on its last good card: %s", s, why)
-                del heads[s]
-                shown[s] = guard.last_head(s) or shown[s]
-                card_v[s] = int(card.stat().st_mtime) if card.exists() else t
-                # the venues table shows the held venue's last published figures, never the doubtful ones
-                kept = (guard.state["venues"].get(s) or {}).get("figures") or {}
-                held = {k: kept.get(k) for k in ("spot_volume", "perp_volume", "tvl", "open_interest")}
-                if "depth" in kept and f.get("deepest"):
-                    held["deepest"] = {**f["deepest"], "usd": kept["depth"]}
-                all_facts[s] = {**f, **held, "series": f.get("series")}
-                continue
-        if cards or not card.exists():
-            render_card(f, heads[s], t, card, look=look)
-            card_v[s] = t
-        else:
-            card_v[s] = int(card.stat().st_mtime)
-        _write(d / "index.html", venue_page(f, heads[s], t, card_v[s]))
-        if guard is not None:
-            guard.accept(s, figs, heads[s], t)
+        try:  # one venue's page or card that will not build is skipped; the others are written
+            d = out / "venues" / s
+            card = d / "card.png"
+            if guard is not None:
+                figs = card_figures(f, heads[s], stats(f))
+                seen = [fresh[i] for i in f["venue"]["rows"] if fresh and i in fresh]
+                age = t - min(seen) if seen else None
+                why = guard.check(s, figs, t, age)
+                if why and (d / "index.html").exists():
+                    log.warning("venue %s held on its last good card: %s", s, why)
+                    del heads[s]
+                    shown[s] = guard.last_head(s) or shown[s]
+                    card_v[s] = int(card.stat().st_mtime) if card.exists() else t
+                    # the venues table shows the held venue's last published figures, never the doubtful ones
+                    kept = (guard.state["venues"].get(s) or {}).get("figures") or {}
+                    held = {k: kept.get(k) for k in ("spot_volume", "perp_volume", "tvl", "open_interest")}
+                    if "depth" in kept and f.get("deepest"):
+                        held["deepest"] = {**f["deepest"], "usd": kept["depth"]}
+                    all_facts[s] = {**f, **held, "series": f.get("series")}
+                    continue
+            if cards or not card.exists():
+                render_card(f, heads[s], t, card, look=look)
+                card_v[s] = t
+            else:
+                card_v[s] = int(card.stat().st_mtime)
+            _write(d / "index.html", venue_page(f, heads[s], t, card_v[s]))
+            if guard is not None:
+                guard.accept(s, figs, heads[s], t)
+        except Exception:  # noqa: BLE001
+            log.exception("venue %s: page not written", s)
+            all_facts.pop(s, None)
     if all_facts:
         _write(out / "venues" / "index.html", index_page(all_facts, shown, t, card_v))
         _write(out / "sitemap.xml", sitemap(all_facts, t))

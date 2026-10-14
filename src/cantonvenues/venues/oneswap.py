@@ -23,6 +23,7 @@ Venue-shape notes:
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
 import httpx
@@ -30,6 +31,8 @@ import httpx
 from ..core.models import Instrument
 from ..core.venue import VenueRequestError
 from .reserves import ReservePool
+
+log = logging.getLogger("cantonvenues")
 
 BASE_URL = "https://api.oneswap.cc/swapv2"
 DOCS_FEE = "pool feeBps; docs.oneswap.cc"
@@ -78,18 +81,29 @@ class OneSwapPublicData:
         for p in raw:
             if not p.get("swapsEnabled", True) or not p.get("visible", True):
                 continue
-            acct = p.get("accounting") or {}
-            x, y = p["assetX"], p["assetY"]
-            out.append(ReservePool(
-                venue="oneswap",
-                pool_id=p["id"],
-                symbol_a=x["symbol"],
-                symbol_b=y["symbol"],
-                token_a=Instrument(admin=x["admin"], id=x["id"]),
-                token_b=Instrument(admin=y["admin"], id=y["id"]),
-                reserve_a=Decimal(str(acct.get("reserveX", p["reserveX"]))),
-                reserve_b=Decimal(str(acct.get("reserveY", p["reserveY"]))),
-                fee=Decimal(p["feeBps"]) / 10_000,
-                fee_source=DOCS_FEE,
-            ))
+            try:  # one malformed row is skipped, not the whole venue (a null reserve or fee, 2026-10-14)
+                pool = self._pool(p)
+            except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+                log.warning("oneswap: pool row skipped: %r", exc)
+                continue
+            # a pool listed before it is funded, or drained on one side, has no price
+            if pool.reserve_a > 0 and pool.reserve_b > 0:
+                out.append(pool)
         return out
+
+    @staticmethod
+    def _pool(p: dict) -> ReservePool:
+        acct = p.get("accounting") or {}
+        x, y = p["assetX"], p["assetY"]
+        return ReservePool(
+            venue="oneswap",
+            pool_id=p["id"],
+            symbol_a=x["symbol"],
+            symbol_b=y["symbol"],
+            token_a=Instrument(admin=x["admin"], id=x["id"]),
+            token_b=Instrument(admin=y["admin"], id=y["id"]),
+            reserve_a=Decimal(str(acct.get("reserveX", p["reserveX"]))),
+            reserve_b=Decimal(str(acct.get("reserveY", p["reserveY"]))),
+            fee=Decimal(p["feeBps"]) / 10_000,
+            fee_source=DOCS_FEE,
+        )

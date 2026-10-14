@@ -117,12 +117,17 @@ def test_defillama_gaps_use_their_own_looser_limit():
 def test_a_failed_source_is_not_a_zero_and_stale_cards_are_reported():
     get = fake_get(fail=("ekiden", "templedigital"))
     text, rows = cx.run(published(), get, NOW)
-    assert text is None and not any(r["venue"] in ("ekiden",) for r in rows)
+    # nothing disagrees, but a source that did not answer is told (a silent check is not a pass, 2026-10-14)
+    assert not any(r["venue"] in ("ekiden",) for r in rows)
+    assert "sources did not answer" in text and "Not checked (source did not answer): ekiden, temple" in text
     old = published()
     for v in old["venues"].values():
         v["t"] -= 3 * 3600
     text, _ = cx.run(old, fake_get(fail=("ekiden",)), NOW)
-    assert "No card republished for 3.2 h" in text and "Not checked (source did not answer): ekiden" in text
+    assert "card not republished for 3.2 h" in text and "Not checked (source did not answer): ekiden" in text
+    one = published()
+    next(iter(one["venues"].values()))["t"] -= 3 * 3600  # one card held, the others fresh: still told
+    assert "card not republished for 3.2 h" in cx.run(one, fake_get(), NOW)[0]
     assert cx.run({}, fake_get(), NOW)[0].endswith("is empty).")
 
 

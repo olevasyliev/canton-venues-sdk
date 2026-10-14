@@ -12,7 +12,11 @@ tick that fails keeps the old snapshot and records ``error`` and ``error_t`` in 
 
 A core venue (Cantex, Tradecraft) that stops answering no longer stops the collector: it is left
 out and ``summary.json`` names it in ``down_since``. Left out for over ``STALE_S`` is told the same
-way (one message, reminders, one message when it is back); a new trouble is told at once.
+way (one message, reminders, one message when it is back); a new trouble is told at once. Since
+2026-10-14 the same goes for: any other priced venue out (``optional_down``), Temple's keyed books
+not read (``temple_priced``), an outside source past its age limit (``sources``: CoinGecko 30 min,
+candles and Tradecraft or Temple volume 1 h, DefiLlama 6 h), and a tick that fails on two runs in a
+row (``status: error`` with a fresh ``t``: summary.json is the tick's last write).
 
 The bot and chat are the pair contact.py and crosscheck.py use (TELEGRAM_BOT_TOKEN, CONTACT_CHAT_ID
 from the server's .env). What was last sent lives in ``--state`` (off the web root), so a restart
@@ -41,6 +45,16 @@ log = logging.getLogger("watchdog")
 URL = "https://cantonvenues.com/api/v1/summary.json"
 STALE_S = 30 * 60      # six missed five-minute ticks
 REMIND_S = 6 * 3600    # while still stale, one reminder per six hours
+# an outside source read longer ago than this is a trouble (summary.json ``sources``: last good read)
+SOURCE_MAX_AGE_S = {"gecko": 30 * 60, "candles": 3600, "tc_volume": 3600, "temple_volume": 3600,
+                    "llama": 6 * 3600}
+SOURCE_NAME = {"gecko": "CoinGecko prices", "candles": "Cantex candles", "tc_volume": "Tradecraft volume",
+               "temple_volume": "Temple settled volume", "llama": "DefiLlama TVL"}
+NAMES = {"poolparty": "Pool Party", "oneswap": "OneSwap", "rocky_perp": "Rocky perps"}
+
+
+def _name(v: str) -> str:
+    return NAMES.get(v, v.capitalize())
 
 
 def _when(t: float) -> str:
@@ -62,22 +76,55 @@ def fetch(url: str = URL, now: datetime | None = None) -> tuple[dict | None, str
         return None, f"{type(exc).__name__}: {getattr(exc, 'code', '') or exc}"[:200]
 
 
+def troubles(summary: dict, now_s: float, error_seen: bool) -> dict[str, tuple[float, str]]:
+    """What is wrong on a fresh snapshot, held past its limit: key -> (since, line). A core venue's key
+    is its id; others are prefixed (``venue:``, ``source:``) or ``temple_book`` / ``error``."""
+    out: dict[str, tuple[float, str]] = {}
+    for v, since in sorted((summary.get("down_since") or {}).items()):
+        if now_s - since > STALE_S:
+            out[v] = (since, f"{_name(v)} has not answered since {_when(since)}, {_ago(now_s - since)} ago. "
+                             "The site runs without its prices.")
+    for v, since in sorted((summary.get("optional_down") or {}).items()):
+        if now_s - since > STALE_S:
+            out[f"venue:{v}"] = (since, f"{_name(v)} has not been read since {_when(since)}, "
+                                        f"{_ago(now_s - since)} ago.")
+    sources = summary.get("sources") or {}
+    book_t = sources.get("temple_book")
+    if summary.get("temple_priced") is False and (book_t is None or now_s - book_t > STALE_S):
+        out["temple_book"] = (book_t or now_s, "Temple's order books are not read (its account key or its API): "
+                                               "Temple shows volume only"
+                                               + (f", since {_when(book_t)}." if book_t else "."))
+    for src, limit in SOURCE_MAX_AGE_S.items():
+        if sources.get(src) is not None and now_s - sources[src] > limit:
+            out[f"source:{src}"] = (sources[src], f"{SOURCE_NAME[src]} last read {_when(sources[src])}, "
+                                                  f"{_ago(now_s - sources[src])} ago.")
+    if summary.get("status") == "error" and error_seen:
+        since = summary.get("error_t") or now_s
+        out["error"] = (since, f"A tick failed on two runs in a row: {html.escape(str(summary.get('error'))[:300])}")
+    return out
+
+
 def check(summary: dict | None, state: dict, now: datetime,
           fetch_error: str | None = None) -> tuple[str | None, dict]:
     """The message to send (None for none) and the state to keep."""
     now_s = now.timestamp()
     t = (summary or {}).get("t")
     fresh = t is not None and now_s - t <= STALE_S
-    # a core venue the collector has left out for over STALE_S (summary.json ``down_since``)
-    down = {v: since for v, since in sorted(((summary or {}).get("down_since") or {}).items())
-            if now_s - since > STALE_S} if fresh else {}
+    # a tick that failed on this run and the last one is a trouble even on a fresh snapshot
+    erring = fresh and (summary or {}).get("status") == "error"
+    down = troubles(summary or {}, now_s, bool(state.get("error_seen"))) if fresh else {}
+    seen = {"error_seen": now_s} if erring else {}
     if fresh and not down:
         if not state.get("alerted"):
-            return None, {}
+            return None, seen
         if state.get("kind") == "venues":
-            names = ", ".join(v.capitalize() for v in state.get("venues", []))
-            return (f"<b>cantonvenues.com has every venue again</b>\n{names} answering again, "
-                    f"out for {_ago(now_s - state['since'])}."), {}
+            keys = state.get("venues", [])
+            if all(":" not in k and k not in ("temple_book", "error") for k in keys):
+                names = ", ".join(_name(v) for v in keys)
+                return (f"<b>cantonvenues.com has every venue again</b>\n{names} answering again, "
+                        f"out for {_ago(now_s - state['since'])}."), seen
+            return (f"<b>cantonvenues.com is whole again</b>\nEverything told since {_when(state['since'])} "
+                    f"is fine again ({_ago(now_s - state['since'])})."), seen
         last = state.get("last_t")
         gap = f"no fresh snapshot for {_ago(t - last)} (since {_when(last)})" if last else \
             "the site had not answered"
@@ -91,12 +138,12 @@ def check(summary: dict | None, state: dict, now: datetime,
         return None, state
     still = "still " if alerted and same else ""
     if fresh:
-        lines = [f"<b>cantonvenues.com is {still}missing a venue</b>"]
-        for v, since in down.items():
-            lines.append(f"{v.capitalize()} has not answered since {_when(since)}, {_ago(now_s - since)} ago. "
-                         "The site runs without its prices.")
+        venue = any(":" not in k and k not in ("temple_book", "error") or k.startswith("venue:") for k in down)
+        head = ("is {still}missing a venue" if venue else "is {still}failing a tick" if "error" in down
+                else "is {still}short of data").format(still=still)
+        lines = [f"<b>cantonvenues.com {head}</b>"] + [line for _, line in down.values()]
         return "\n".join(lines), {"alerted": now_s, "kind": "venues", "venues": list(down),
-                                  "since": min(down.values())}
+                                  "since": min(since for since, _ in down.values()), **seen}
     last = t if t is not None else state.get("last_t")
     lines = [f"<b>cantonvenues.com {'still not' if still else 'is not'} refreshing</b>"]
     if t is None:

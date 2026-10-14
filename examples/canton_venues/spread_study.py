@@ -73,10 +73,31 @@ def summarize(samples: list[dict], step: int) -> dict:
     }
 
 
+async def setup(c: Collector) -> None:
+    """Connect and read what every sample needs once. Tradecraft is optional, as in the collector: a
+    "degraded" health answer used to stop the whole run before its first sample (replayed 2026-10-14)."""
+    await c.cantex.connect()
+    try:
+        await c.tradecraft.connect()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("tradecraft: %s; sampling without it until it answers", exc)
+    tc = await _or_empty(c.tradecraft.pool_states(), "tradecraft pools")
+    await c._refresh_slow(tc, await _or_empty(c.cantex.markets(), "cantex markets"))
+
+
+async def _or_empty(call, what: str) -> list:
+    """A read the study can do without: its result, or nothing when it fails."""
+    try:
+        return await call
+    except Exception as exc:  # noqa: BLE001
+        log.warning("%s: %s", what, exc)
+        return []
+
+
 async def sample(c: Collector) -> dict:
     cx = await c.cantex.pool_states()
-    tc = await c.tradecraft.pool_states()
-    tcp = await c.tradecraft.pools()
+    tc = await _or_empty(c.tradecraft.pool_states(), "tradecraft pools")
+    tcp = await _or_empty(c.tradecraft.pools(), "tradecraft instruments") if tc else []
     books = c._books(cx, tc, tcp, Decimal("0.9"))
     await c._reserve_venues(books, cx)
     _, t_books, _, cc_book = await c._temple_spot(books, Decimal(1))
@@ -114,11 +135,9 @@ async def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     c = Collector(args.out)
-    await c.start()
     samples, errors = [], 0
     try:
-        tc = await c.tradecraft.pool_states()
-        await c._refresh_slow(tc, await c.cantex.markets())
+        await setup(c)
         started = time.monotonic()
         while time.monotonic() - started < args.duration:
             t0 = time.monotonic()

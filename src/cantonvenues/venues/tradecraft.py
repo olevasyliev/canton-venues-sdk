@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -58,6 +59,8 @@ import httpx
 
 from ..core.models import Instrument, Pool, Quote
 from ..core.venue import PoolDataAdapter, VenueRequestError
+
+log = logging.getLogger("cantonvenues")
 
 MAINNET_BASE_URL = "https://api.tradecraft.fi/v1"
 DEVNET_BASE_URL = "https://tradecraft.validator.dev.canton.obsidian.systems/amm-http-api"
@@ -243,7 +246,12 @@ class TradecraftAdapter(PoolDataAdapter):
         raw = await self._get("/pools")
         if not isinstance(raw, dict) or not isinstance(raw.get("pools"), list):
             raise VenueRequestError(f"unexpected /pools response: {raw!r}")
-        states = [self._state_from_pools_row(row) for row in raw["pools"]]
+        states = []
+        for row in raw["pools"]:
+            try:  # one malformed row is skipped, not the whole venue (a null holding, replayed 2026-10-14)
+                states.append(self._state_from_pools_row(row))
+            except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+                log.warning("tradecraft: pool row skipped: %r", exc)
         self._states = {s.amm_id: s for s in states}
         return states
 
@@ -276,7 +284,11 @@ class TradecraftAdapter(PoolDataAdapter):
         for state in states:
             # sequential on purpose: 13 tokens across 23 pools, so the cache
             # absorbs most of the work, and this is somebody else's mainnet API
-            inst_a, inst_b = await self._instruments_for(state.token_a, state.token_b)
+            try:  # a new pool whose tokens will not resolve is left out, not every pool
+                inst_a, inst_b = await self._instruments_for(state.token_a, state.token_b)
+            except VenueRequestError as exc:
+                log.warning("tradecraft: pool %s left out: %s", state.amm_id, exc)
+                continue
             pools.append(Pool(contract_id=state.amm_id, token_a=inst_a, token_b=inst_b))
         return pools
 

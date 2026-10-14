@@ -41,4 +41,5 @@ def test_a_venue_left_out_shows_down_and_is_named_in_the_summary(tmp_path):
     assert rows["tradecraft"] == "down" and rows["cantex"] == "priced"
     s = c._summary(Decimal("0.125"), {}, {}, {}, 1_791_973_000_000, {}, 1_791_973_000, 1.0)
     assert s["venues_priced"] == ["cantex"] and s["down_since"] == {"tradecraft": 1_791_970_000}
-    assert s["cantex_24h"]["volume_usd"] == 0  # no stats at all: zero, not a crash
+    # no stats at all: unknown, not $0 and 0 swaps (batch 2, 2026-10-14), and not a crash
+    assert s["cantex_24h"]["volume_usd"] is None and s["cantex_24h"]["swaps"] is None

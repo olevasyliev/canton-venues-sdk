@@ -31,6 +31,7 @@ Venue quirks this adapter absorbs:
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -38,6 +39,7 @@ from decimal import Decimal
 import httpx
 
 from ..core.models import (
+    live_levels,
     BookLevel,
     FundingRate,
     Market,
@@ -50,6 +52,8 @@ from ..core.venue import MarketDataAdapter, VenueRequestError
 
 # MainNet opened 2026-09-08; Ekiden's docs list it as "Production". Its routes and payloads
 # match the testnet gateway's (checked 2026-10-03).
+log = logging.getLogger("cantonvenues")
+
 MAINNET_BASE_URL = "https://api.ekiden.fi"
 TESTNET_BASE_URL = "https://api.cnt.ekiden.fi"
 STAGING_BASE_URL = "https://api.canton.ekiden.fi"
@@ -159,24 +163,26 @@ class EkidenAdapter(MarketDataAdapter):
         raw = await self._get("/api/v1/market/tickers", params)
         out = []
         for t in self._rows(raw, "/api/v1/market/tickers"):
-            out.append(
-                Ticker(
-                    symbol=t["symbol"],
-                    last_price=_dec(t["last_price"]),
-                    index_price=_dec(t["index_price"]),
-                    mark_price=_dec(t["mark_price"]),
-                    open_interest=_dec(t["open_interest"]),
-                    volume_24h=_dec(t["volume_24h"]),
-                    turnover_24h=_dec(t["turnover_24h"]),
-                    funding_rate=_dec(t["funding_rate"]),
-                    next_funding_time=(
-                        _ts(t["next_funding_time"]) if t.get("next_funding_time") else None
-                    ),
-                    best_bid=self._top(t.get("best_bid_price"), t.get("best_bid_size")),
-                    best_ask=self._top(t.get("best_ask_price"), t.get("best_ask_size")),
-                )
-            )
+            try:  # one malformed row is skipped, not the whole venue (a null mark_price, 2026-10-14)
+                out.append(self._ticker(t))
+            except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+                log.warning("ekiden: ticker row skipped: %r", exc)
         return out
+
+    def _ticker(self, t: dict) -> Ticker:
+        return Ticker(
+            symbol=t["symbol"],
+            last_price=_dec(t["last_price"]),
+            index_price=_dec(t["index_price"]),
+            mark_price=_dec(t["mark_price"]),
+            open_interest=_dec(t["open_interest"]),
+            volume_24h=_dec(t["volume_24h"]),
+            turnover_24h=_dec(t["turnover_24h"]),
+            funding_rate=_dec(t["funding_rate"]),
+            next_funding_time=_ts(t["next_funding_time"]) if t.get("next_funding_time") else None,
+            best_bid=self._top(t.get("best_bid_price"), t.get("best_bid_size")),
+            best_ask=self._top(t.get("best_ask_price"), t.get("best_ask_size")),
+        )
 
     @staticmethod
     def _top(price: object, size: object) -> BookLevel | None:
@@ -207,8 +213,8 @@ class EkidenAdapter(MarketDataAdapter):
         return OrderBook(
             symbol=book["s"],
             timestamp=_ts(book["ts"]),
-            bids=tuple(BookLevel(price=_dec(p), size=_dec(s)) for p, s in book.get("b", [])),
-            asks=tuple(BookLevel(price=_dec(p), size=_dec(s)) for p, s in book.get("a", [])),
+            bids=live_levels(BookLevel(price=_dec(p), size=_dec(s)) for p, s in book.get("b", [])),
+            asks=live_levels(BookLevel(price=_dec(p), size=_dec(s)) for p, s in book.get("a", [])),
         )
 
     async def recent_trades(self, symbol: str, limit: int = 50) -> list[Trade]:

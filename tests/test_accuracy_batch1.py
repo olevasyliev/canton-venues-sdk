@@ -5,6 +5,7 @@ fixes are checked where the collector wires them, not only in the pure functions
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import sys
 import time
@@ -65,14 +66,16 @@ class _Venue:
 
         async def call(*_a, **_k):
             v = self.reads[name]
-            return v(*_a) if callable(v) else v
+            got = v(*_a) if callable(v) else v
+            return await got if inspect.isawaitable(got) else got
         return call
 
 
-def _tick(tmp_path, monkeypatch, optional=None, states=()):
+def _tick(tmp_path, monkeypatch, optional=None, states=(), cantex=None, gecko=None):
     """One collector tick: a thin Cantex CC/USDCx pool at 0.118 and Temple's deep CC/USDCx book at
     0.1172; Temple's settled volume; a dead TRKXRWA candle series; USDM1 untraded; Ekiden's XAG index.
-    ``optional`` replaces optional venues (Rocky, Pool Party, ...), ``states`` adds Cantex pools."""
+    ``optional`` replaces optional venues (Rocky, Pool Party, ...), ``states`` adds Cantex pools,
+    ``cantex`` replaces Cantex reads and ``gecko`` CoinGecko rows."""
     now = int(time.time())
     monkeypatch.setattr(m, "metals_open", lambda t: True, raising=False)  # the spot market trades
     for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
@@ -95,6 +98,7 @@ def _tick(tmp_path, monkeypatch, optional=None, states=()):
         markets=[{"symbol": "CC-USDCX", "source": "cantex"}, {"symbol": "TRKXRWA-CC", "source": "cantex"}],
         candles={"CC-USDCX": cc_bars, "TRKXRWA-CC": dead},
         tokens=[{"instrument_admin": i.admin, "instrument_id": i.id, "instrument_symbol": s} for s, i in INST.items()])
+    c.cantex.reads.update(cantex or {})
     c.tradecraft = _Venue(pool_states=[], pools=[])
     books = {"CC/USDCx": _book("CC/USDCx", TEMPLE_CC_MID, "50000", "0.00001"),
              "CBTC/USDCx": _book("CBTC/USDCx", "83700", "0.5", "1")}
@@ -110,7 +114,8 @@ def _tick(tmp_path, monkeypatch, optional=None, states=()):
     fresh = {"usd": 1.0, "last_updated_at": now}
     gecko = {"xreserve-bridged-usdc-canton": fresh, "canton-network": {"usd": 0.1173, "last_updated_at": now},
              "bitcoin": {"usd": 83700, "last_updated_at": now},
-             "kinesis-silver": {"usd": 57.2, "last_updated_at": now}}  # KAG: what the old code compared with
+             "kinesis-silver": {"usd": 57.2, "last_updated_at": now},  # KAG: what the old code compared with
+             **(gecko or {})}
 
     async def fake_json(url, params=None):
         if url == collect.GECKO:

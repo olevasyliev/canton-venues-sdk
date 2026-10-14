@@ -54,7 +54,7 @@ from decimal import Decimal
 
 import httpx
 
-from ..core.models import Balance, BookLevel, FundingRate, Instrument, Market, Order, OrderBook, Side, Ticker, Trade
+from ..core.models import Balance, BookLevel, FundingRate, Instrument, Market, Order, OrderBook, Side, Ticker, Trade, live_levels
 from ..core.venue import OrderTradingAdapter, TradingDisabledError, VenueAuthError, VenueRequestError
 
 MAINNET_BASE_URL = "https://api.templedigitalgroup.com"
@@ -207,8 +207,8 @@ class TempleAdapter(OrderTradingAdapter):
         return OrderBook(
             symbol=book.get("symbol", symbol),
             timestamp=_ts(book["timestamp"]) if book.get("timestamp") else datetime.now(UTC),
-            bids=tuple(BookLevel(price=_dec(lv["price"]), size=_dec(lv["quantity"])) for lv in book["bids"]),
-            asks=tuple(BookLevel(price=_dec(lv["price"]), size=_dec(lv["quantity"])) for lv in book["asks"]),
+            bids=live_levels(BookLevel(price=_dec(lv["price"]), size=_dec(lv["quantity"])) for lv in book["bids"]),
+            asks=live_levels(BookLevel(price=_dec(lv["price"]), size=_dec(lv["quantity"])) for lv in book["asks"]),
         )
 
     async def recent_trades(self, symbol: str, limit: int = 50) -> list[Trade]:
