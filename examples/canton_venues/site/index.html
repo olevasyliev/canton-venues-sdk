@@ -938,7 +938,7 @@ function renderExecution() {
       ${vs.map((v) => `<td class="num" style="${netBest(r) === v ? `color:${VC[v]};font-weight:700` : ""}"${r.out_net && r.out[v] != null ? ` title="${esc(`Before the network fee: ${outU === "$" ? money(r.out[v]) : amt(r.out[v]) + " " + outU}. Network fee per trade: ${feeNote(v)}`)}"` : ""}>${fmt(netOut(r)[v], outU)}</td>`).join("")}
       <td class="num hide-sm">${V[netBest(r)]} +${(netEdge(r) / 100).toFixed(2)}%</td></tr>`).join("") + "</tbody>";
   $("execnote").innerHTML = usd ? `Same dollar amount on every venue. Pool routes go through CC: dollars to CC on the best CC/USDCx pool, then CC to ${sym}, so two swaps. ${Object.entries(pair.books || {}).map(([v, b]) => `${V[v]} is one order on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "rocky" ? " (assumed: Rocky publishes no fee schedule)" : v === "temple" ? " (Temple's published rate)" : ""}`).join("; ")}. Cost is measured against the Canton price.`
-    : "Pool fees and price impact included.";
+    : "Pool fees and price impact included." + Object.entries(pair.books || {}).map(([v, b]) => ` ${V[v]} is one order on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "temple" ? " (Temple's published rate)" : ""}.`).join("");
   const assumed = vs.filter((v) => (D.execution.network_fee || {})[v]?.basis === "assumed").map((v) => V[v]);
   if (D.execution.network_fee) $("execnote").innerHTML += ` Each venue's network fee per trade is taken off too${assumed.length ? `; for ${assumed.join(", ")} it is our assumption until we measure it` : ""}. Hover a figure for it before the fee.`;
 }

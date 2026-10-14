@@ -340,8 +340,9 @@ class Collector:
             self._drop("rocky", exc)
             return {}, {}, None
 
-    async def _temple_spot(self, books, usdcx_usd) -> tuple[dict, dict, dict | None]:
-        """Temple's USDCx books, in the same shape as Rocky's, plus its CC/USDCx quote for the premium.
+    async def _temple_spot(self, books, usdcx_usd) -> tuple[dict, dict, dict | None, m.BookVenue | None]:
+        """Temple's USDCx books, in the same shape as Rocky's, plus its CC/USDCx quote for the premium
+        and its CC/USDCx book, which joins every CC/USDCx comparison (``m.CCBook``).
 
         Needs TEMPLE_API_KEY; without it Temple stays volume-only (settled volume needs no key).
         Volume is not taken from here: the keyless settled-volume route already counts it.
@@ -349,9 +350,9 @@ class Collector:
         temple = await self._venue("temple")
         self.temple_priced = False
         if temple is None or not temple.has_key:
-            return {}, {}, None
+            return {}, {}, None, None
         try:
-            out, kept, cc = {}, {}, None
+            out, kept, cc, cc_book = {}, {}, None, None
             for t in await temple.tickers():
                 base, _, quote = t.symbol.partition("/")
                 k = m.key(base)
@@ -365,19 +366,19 @@ class Collector:
                         "depth_usd": r(depth, 2),
                         "spread_bps": r((book.best_ask.price / book.best_bid.price - 1) * 10_000, 2),
                         "volume_24h_usd": None}
+                bv = m.BookVenue("temple", t.symbol, tuple((lv.price, lv.size) for lv in book.bids),
+                                 tuple((lv.price, lv.size) for lv in book.asks), usdcx_usd,
+                                 m.BOOK_TAKER_FEE["temple"])
                 if k == CC:
-                    cc = info
+                    cc, cc_book = info, bv
                     continue
                 out[k] = {"temple": info}
-                kept[k] = {"temple": m.BookVenue("temple", t.symbol,
-                                                 tuple((lv.price, lv.size) for lv in book.bids),
-                                                 tuple((lv.price, lv.size) for lv in book.asks),
-                                                 usdcx_usd, m.BOOK_TAKER_FEE["temple"])}
+                kept[k] = {"temple": bv}
             self.temple_priced = bool(out)
-            return out, kept, cc
+            return out, kept, cc, cc_book
         except Exception as exc:  # noqa: BLE001
             self._drop("temple", exc)
-            return {}, {}, None
+            return {}, {}, None, None
 
     async def _perps(self, gecko, cc_usd) -> list[dict]:
         """Every perp market on Rocky and Ekiden, with its basis to the outside spot price."""
@@ -703,12 +704,18 @@ class Collector:
         self.cc_usd_last = cc_usd
 
         ob, ob_books, rocky_spot_vol = await self._rocky_spot(books, cc_usd, usdcx_usd)
-        t_ob, t_books, temple_cc = await self._temple_spot(books, usdcx_usd)
+        t_ob, t_books, temple_cc, temple_cc_book = await self._temple_spot(books, usdcx_usd)
         for k, v in t_ob.items():
             ob.setdefault(k, {}).update(v)
         for k, v in t_books.items():
             ob_books.setdefault(k, {}).update(v)
         perps = await self._perps(gecko, cc_usd)
+        # Temple's CC/USDCx book joins every CC/USDCx comparison (best execution, the scanner, the paper
+        # router) but not the CC price, the token prices or the pool tables, which stay the pools'
+        cmp_books = books
+        if temple_cc_book is not None and temple_cc_book.bids and temple_cc_book.asks:
+            cmp_books = {**books, USDCX: {**stable, "temple": m.CCBook(
+                "temple", next(iter(stable.values())).token, temple_cc_book)}}
         prices = self._prices(books, cc_usd, ob)
 
         series = self._usd_series(now_ms, usdcx_usd)
@@ -718,15 +725,15 @@ class Collector:
         tokens = self._tokens(books, cc_usd, tickers, series, own, now_ms, ob, prices)
         premium = self._premium(books, cc_usd, gecko, ob, prices, temple_cc)
         dollar = {k: m.DollarRoutes(books[k], stable, b, usdcx_usd) for k, b in ob_books.items()}
-        cc_pairs = self._execution(books, cc_usd)
+        cc_pairs = self._execution(cmp_books, cc_usd)
         # CC/USDCx stays the default view; order-book tokens in dollars come right after it
         execution = cc_pairs[:1] + self._usd_execution(books, dollar, prices, cc_usd) + cc_pairs[1:]
-        scan = m.scan({k: v for k, v in books.items() if len(v) > 1}, cc_usd)
+        scan = m.scan({k: v for k, v in cmp_books.items() if len(v) > 1}, cc_usd)
         for k, routes in dollar.items():
             scan += m.usd_scan(k, routes, cc_usd)
         scan.sort(key=lambda x: -x["net_usd"])
         if not self.down:  # the paper desk trades only on a full view of the venues
-            self._paper(books, cc_usd, scan, now)
+            self._paper(cmp_books, cc_usd, scan, now)
         lp = self._lp(books, cc_usd, tickers, tc_states)
         summary = self._summary(cc_usd, cx_volume, gecko, series, now_ms, books, now,
                                 time.monotonic() - started)
@@ -753,8 +760,10 @@ class Collector:
         write_json(self.api / "pools.json", {
             "t": now, "cc_usd": float(cc_usd),
             "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()},
-            # every book behind a dollar route is quoted in USDCx (see _rocky_spot)
-            "books": {k: {v: m.book_to_json(b, USDCX) for v, b in vs.items()} for k, vs in ob_books.items()}})
+            # every book behind a dollar route is quoted in USDCx (see _rocky_spot); CC's own book on
+            # Temple sits under CC, so the MCP quote prices CC/USDCx on it too
+            "books": {k: {v: m.book_to_json(b, USDCX) for v, b in vs.items()} for k, vs in ob_books.items()}
+            | ({CC: {"temple": m.book_to_json(temple_cc_book, USDCX)}} if temple_cc_book is not None else {})})
         write_json(self.api / "history.json", self.history)
         write_json(self.api / "venues.json", venues)
         write_json(self.api / "perps.json", {"t": now, "markets": perps})
@@ -1002,6 +1011,9 @@ class Collector:
                 "venues": sorted(pools),
                 "symbol": next(iter(pools.values())).token,
                 "mid": {v: r(p.mid, 12) for v, p in pools.items()},
+                # a venue that is one order on its book here (Temple's CC/USDCx), as a dollar pair names it
+                **({"books": bk} if (bk := {v: {"market": p.book.symbol, "fee": float(p.book.fee)}
+                                            for v, p in pools.items() if isinstance(p, m.CCBook)}) else {}),
                 "rows": rows,
                 "crossover_usd": {s: m.crossover_usd(rows, s, "cantex", "tradecraft")
                                   for s in ("sell", "buy")},

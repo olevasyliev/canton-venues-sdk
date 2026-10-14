@@ -161,7 +161,7 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
     """Best execution for selling `amount` of token `sell` (or `amount_usd` worth) for token `buy`,
     priced from live reserves on Cantex and Tradecraft. Shows every venue's output per leg; a
     token-to-token trade routes through CC with each leg on its best venue. When the pair also trades
-    on an order book (Temple and Rocky: CBTC/USDCx, eXAU/USDCx, eXAG/USDCx, cETH/USDC.B) the same trade is priced there too, and `best`
+    on an order book (Temple: CC/USDCx, CBTC/USDCx, eXAU/USDCx, eXAG/USDCx; Rocky: CBTC/USDCx, cETH/USDC.B) the same trade is priced there too, and `best`
     says which wins. Pool fees and price impact are included; network fees are not, and each venue's
     per-trade fee is returned in `network_fees` (unit, best estimate, range, and whether it is measured,
     documented or assumed)."""

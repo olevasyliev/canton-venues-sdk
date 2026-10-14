@@ -157,17 +157,18 @@ def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> lis
             cc_amount = Decimal(size) / cc_in_usd
             amount = cc_amount if side == "sell" else cc_amount * mid
             outs = {v: p.out(side == "sell", amount) for v, p in pools.items()}
-            best = max(outs, key=outs.get)
+            filled = {v: o for v, o in outs.items() if o > 0}  # a book that runs out returns 0
+            best = max(filled, key=filled.get)
             # what one unit received is worth: the token on a sell (``mid`` per CC), CC on a buy
             out_usd = cc_in_usd / mid if side == "sell" else cc_in_usd
             rows.append({
                 "side": side,  # sell = sell CC for the token, buy = buy CC with it
                 "size_usd": size,
                 "amount_in": float(amount),
-                "out": {v: float(o) for v, o in outs.items()},
+                "out": {v: (float(o) if o > 0 else None) for v, o in outs.items()},
                 "best": best,
-                "edge_bps": runner_up_bps(outs),
-                **net_of_fees(outs, {v: network_fee_usd(v, cc_in_usd) for v in outs}, out_usd),
+                "edge_bps": runner_up_bps(filled),
+                **net_of_fees(filled, {v: network_fee_usd(v, cc_in_usd) for v in filled}, out_usd),
             })
     return rows
 
@@ -342,6 +343,31 @@ class BookVenue:
     def fingerprint(self) -> str:
         top = (self.bids[:1] + self.asks[:1])
         return f"{self.venue}:" + ":".join(f"{p}x{q}" for p, q in top)
+
+
+@dataclass(frozen=True)
+class CCBook:
+    """An order book for CC itself (Temple's CC/USDCx), asked like a pool so it joins every CC
+    comparison: best execution, the scanner and the paper router.
+
+    It has no reserves: ``cc_reserve`` is 0, so it weighs nothing in ``blended_mid`` (the CC price
+    stays the pools' blend), and it never enters the pool tables. ``out`` walks the book after its
+    taker fee; a book that runs out returns 0, which every comparison reads as "cannot fill".
+    """
+
+    venue: str
+    token: str  # display symbol of the quote side, as a pool's non-CC side
+    book: BookVenue
+    cc_reserve: Decimal = Decimal(0)
+
+    @property
+    def mid(self) -> Decimal:
+        """Quote token per CC: halfway between the best bid and the best ask."""
+        return (self.book.bids[0][0] + self.book.asks[0][0]) / 2
+
+    def out(self, sell_cc: bool, amount: Decimal) -> Decimal:
+        got = self.book.sell_base(amount) if sell_cc else self.book.buy_base(amount)
+        return got if got is not None else Decimal(0)
 
 
 def book_to_json(b: BookVenue, quote_key: str) -> dict:
