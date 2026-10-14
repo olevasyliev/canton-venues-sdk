@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from model import REFERENCES, STABLES
+from model import NO_SPOT, REFERENCES, STABLES
 
 PEG_LIMIT = 0.005        # a stablecoin more than 0.5% from $1
 PREMIUM_LIMIT = 0.01     # an asset more than 1% from its outside price
@@ -47,13 +47,15 @@ def pct(f: float) -> str:
 
 def evaluate(tokens: list[dict], premium: list[dict], scan: list[dict],
              price_hour_ago: dict[str, float]) -> list[Alert]:
-    """Every condition that is true right now."""
+    """Every condition that is true right now. A token that traded nowhere in 24h (``traded_24h``
+    False) raises none: its price is CC's times a frozen ratio, so it only retells CC's moves."""
     liq = {t["key"]: t.get("liquidity_usd") or 0 for t in tokens}
     sym = {t["key"]: t["symbol"] for t in tokens}
+    idle = {t["key"] for t in tokens if t.get("traded_24h") is False}
     out: list[Alert] = []
     for a in premium:
         p = a.get("premium")
-        if a.get("status") != "ok" or p is None:
+        if a.get("status") != "ok" or p is None or a["key"] in idle:
             continue
         if a["key"] != "CC" and liq.get(a["key"], 0) < MIN_LIQUIDITY_USD:
             continue
@@ -81,7 +83,7 @@ def evaluate(tokens: list[dict], premium: list[dict], scan: list[dict],
                              r["net_usd"] >= LOUD_ROUTE_USD))
     for t in tokens:
         before, now = price_hour_ago.get(t["key"]), t.get("price_usd")
-        if not before or not now or liq.get(t["key"], 0) < MIN_LIQUIDITY_USD:
+        if not before or not now or liq.get(t["key"], 0) < MIN_LIQUIDITY_USD or t["key"] in idle:
             continue
         move = now / before - 1
         if abs(move) > MOVE_LIMIT:
@@ -90,9 +92,10 @@ def evaluate(tokens: list[dict], premium: list[dict], scan: list[dict],
                              f"{sym[t['key']]} {pct(move)} in the last hour on Canton DEXes.",
                              f"<b>{sym[t['key']]}</b> <b>{pct(move)}</b> in the last hour on Canton DEXes.",
                              # a token with an outside price shows a real move as a premium; a big hourly
-                             # move without one (eXAU +25% then -20% on 6 Oct) is a thin quote, not news
+                             # move without one (eXAU +25% then -20% on 6 Oct) is a thin quote, not news;
+                             # tokens that track an asset we have no spot price for (NO_SPOT) stay quiet too
                              liq.get(t["key"], 0) >= LOUD_LIQUIDITY_USD and t["key"] not in REFERENCES
-                             and t["key"] not in STABLES))
+                             and t["key"] not in NO_SPOT and t["key"] not in STABLES))
     return out
 
 

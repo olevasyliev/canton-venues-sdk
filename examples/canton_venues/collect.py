@@ -8,8 +8,8 @@ Sources, all public, no keys:
   OneSwap     pool reserves                          (OneSwapPublicData)
   Pool Party  pool reserves and volume               (PoolPartyPublicData)
   Temple      settled volume per market, no key      (TempleAdapter)
-  DefiLlama   Canton DEX volume and chain TVL        (ecosystem context)
-  CoinGecko   outside prices for the premium board
+  DefiLlama   Canton chain TVL, and DEX volume as an internal cross-check
+  CoinGecko   outside prices for the premium board (gold and silver: Ekiden's spot index)
 
 Every tick (default 300 s) prices both venues from reserves; every third tick
 also refreshes candles, per-pool volumes and DefiLlama. Output goes to
@@ -69,9 +69,27 @@ GECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets"
 # Cantex maps these to their underlying asset's CoinGecko id; that logo would
 # say they ARE that asset, so they get none.
 NO_LOGO = {"USX", "USDXLR"}
-# What a perp tracks outside Canton, for its basis. CoinGecko ids.
-PERP_SPOT = {"BTC": "bitcoin", "ETH": "ethereum", "CC": "canton-network", "XAU": "pax-gold",
-             "XAG": "kinesis-silver", "HYPE": "hyperliquid"}
+# What a perp tracks outside Canton, for its basis. CoinGecko ids; gold and silver are their spot
+# price instead (``METALS``), not a token's.
+PERP_SPOT = {"BTC": "bitcoin", "ETH": "ethereum", "CC": "canton-network", "HYPE": "hyperliquid"}
+# Spot gold and silver: Ekiden's index for its XAU and XAG perps, read with its tickers every tick
+# (model.REFERENCES "spot:XAU"). Taken only while the spot market trades (model.metals_open), and
+# not once it has stood still this long in market hours: an index that stops is not spot.
+METALS = ("XAU", "XAG")
+METAL_STILL_MAX_S = 900
+# Each step in how a published series is computed, recorded once in history.json "steps" with the
+# time of the first tick computed the new way, so a chart or a weekly median can tell the step from
+# a market move. "premium": the step changes these keys' premium readings.
+STEPS = [
+    {"id": "cc-price-depth-weighted", "keys": ["CC"], "premium": True,
+     "what": "CC price weighted by depth across every CC/USDCx market, Temple's order book included; "
+             "until then the pools' mid weighted by CC reserve. Every price converted through CC moves with it."},
+    {"id": "metals-against-spot", "keys": ["EXAU", "EXAG"], "premium": True,
+     "what": "eXAU and eXAG measured against gold and silver spot while the spot market trades; until "
+             "then against PAXG and KAG, tokens with their own premium."},
+    {"id": "stock-tokens-no-reference", "keys": ["SPYE", "QQQE"], "premium": True,
+     "what": "SPYe and QQQe no longer measured against SPYx and QQQx, tokens with their own premium."},
+]
 # why a CC pool is read but not quoted (lp.json unpriced_pools)
 UNNAMED = "token not named by any venue we price"
 SECOND_POOL = "a second pool for the same token"
@@ -126,6 +144,16 @@ def r(x, n=6):
     return None if x is None else round(float(x), n)
 
 
+def _gecko_usd(gecko: dict, gid: str, now: int) -> float | None:
+    """A CoinGecko price, or None when it is missing or CoinGecko last updated it more than
+    ``model.REFERENCE_MAX_AGE_S`` ago (KAG's stood still for up to 2 h 40 min in October)."""
+    row = gecko.get(gid) or {}
+    t = row.get("last_updated_at")
+    if row.get("usd") is None or t is None or now - t > m.REFERENCE_MAX_AGE_S:
+        return None
+    return row["usd"]
+
+
 class Collector:
     def __init__(self, out: Path, state: Path | None = None) -> None:
         self.out = out
@@ -146,6 +174,8 @@ class Collector:
         self.cc_usd_last = Decimal(0)
         self.temple_priced = False
         self.rocky_books: dict[str, float] = {}  # each Rocky spot book's 24h turnover in dollars, this tick
+        self.metal_spot: dict[str, Decimal] = {}  # gold and silver spot this tick (METALS), when usable
+        self.metal_seen: dict[str, tuple[Decimal, int]] = {}  # each index's last value and since when
         self.http = httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "canton-venues/1"})
         self.tick_no = 0
         self.slow: dict = {}
@@ -202,17 +232,22 @@ class Collector:
         try:
             # the per-protocol daily breakdown feeds each venue page's volume history
             dex = await self._json(f"{LLAMA}/overview/dexs/Canton", {"excludeTotalDataChart": "true"})
-            chains = await self._json(f"{LLAMA}/v2/chains")
+            # Canton's TVL as DefiLlama's dated daily point, so the page can say which day it is
+            tvl = (await self._json(f"{LLAMA}/v2/historicalChainTvl/Canton") or [{}])[-1]
+            now = int(time.time())
+            # An internal cross-check and the venue pages' "on Canton" gate; the public figures are our
+            # own (venues.json), and only the TVL, which we do not measure, is shown, with its day
             self.slow["llama"] = {
+                "t": now,
                 "dex_volume_24h": dex.get("total24h"),
                 "dex_volume_7d": dex.get("total7d"),
                 "dex_change_1d": dex.get("change_1d"),
                 "venues": sorted(({"name": p["name"], "volume_24h": p.get("total24h")}
                                   for p in dex.get("protocols", [])),
                                  key=lambda p: -(p["volume_24h"] or 0)),
-                "tvl": next((c["tvl"] for c in chains if c["name"] == "Canton"), None),
+                "tvl": tvl.get("tvl"),
+                "tvl_day": datetime.fromtimestamp(tvl["date"], UTC).date().isoformat() if "date" in tvl else None,
             }
-            now = int(time.time())
             per, total = venue_history.llama_daily(dex, now)
             for slug, pts in per.items():
                 venue_history.set_daily(self.vhist, slug, "defillama", pts, now)
@@ -380,14 +415,31 @@ class Collector:
             self._drop("temple", exc)
             return {}, {}, None, None
 
-    async def _perps(self, gecko, cc_usd) -> list[dict]:
+    def _metal(self, base: str, index: Decimal | None, now: int) -> Decimal | None:
+        """Ekiden's index for a metal as its spot price, or None: market closed, no index, or an index
+        that has not moved for ``METAL_STILL_MAX_S`` while the market trades."""
+        if not index:
+            return None
+        last = self.metal_seen.get(base)
+        if last is None or last[0] != index:
+            self.metal_seen[base] = last = (index, now)
+        if not m.metals_open(now) or now - last[1] > METAL_STILL_MAX_S:
+            return None
+        self.metal_spot[base] = index
+        return index
+
+    async def _perps(self, gecko, cc_usd, now: int | None = None) -> list[dict]:
         """Every perp market on Rocky and Ekiden, with its basis to the outside spot price."""
         rows = []
+        now = now or int(time.time())
+        self.metal_spot = {}
 
         def spot(base: str):
             if base == "CC":
                 return float(cc_usd)
-            return gecko.get(PERP_SPOT.get(base, ""), {}).get("usd")
+            if base in METALS:  # only Ekiden lists them; its own index, below
+                return None
+            return _gecko_usd(gecko, PERP_SPOT.get(base, ""), now)
 
         rocky = await self._venue("rocky_perp")
         if rocky is not None:
@@ -414,9 +466,11 @@ class Collector:
                     book = await ekiden.order_book(t.symbol, 200)
                     depth = (m.book_depth_usd(book.bids, book.asks, book.mid_price, Decimal(1))
                              if book.mid_price else None)
+                    ref = self._metal(base, t.index_price, now) if base in METALS else spot(base)
                     rows.append(self._perp_row("ekiden", t.symbol, base, quote, t.last_price, t.mark_price,
                                                t.index_price, t.funding_rate, t.open_interest * t.mark_price,
-                                               t.turnover_24h, t.best_bid, t.best_ask, spot(base), depth))
+                                               t.turnover_24h, t.best_bid, t.best_ask,
+                                               float(ref) if ref is not None else None, depth))
                 self.fresh["ekiden"] = int(time.time())
             except Exception as exc:  # noqa: BLE001
                 self._drop("ekiden", exc)
@@ -484,14 +538,17 @@ class Collector:
         total = sum(x["volume_24h_usd"] for x in spot)
         priced = sum(x["volume_24h_usd"] for x in spot if x["status"] == "priced")
         return {"t": now, "venues": rows, "spot_volume_24h_usd": r(total, 2),
+                # our own hourly readings, a day apart (the home page's headline; no outside figure)
+                "spot_volume_change_24h": r(venue_history.total_change(self.vhist, now)),
                 "spot_priced_share": r(priced / total, 4) if total else None,
                 "perp_volume_24h_usd": r(sum(perp_vol.values()), 2)}
 
     async def _gecko(self) -> dict:
-        ids = sorted({g for g, _ in m.REFERENCES.values()} | {USDCX_GECKO} | set(PERP_SPOT.values()))
+        ids = sorted({g for g, _ in m.REFERENCES.values() if not g.startswith("spot:")}
+                     | {USDCX_GECKO} | set(PERP_SPOT.values()))
         try:
             return await self._json(GECKO, {"ids": ",".join(ids), "vs_currencies": "usd",
-                                            "include_24hr_change": "true"})
+                                            "include_24hr_change": "true", "include_last_updated_at": "true"})
         except Exception as exc:  # noqa: BLE001
             log.warning("coingecko: %s", exc)
             return self.slow.get("gecko_last", {})
@@ -631,20 +688,23 @@ class Collector:
                       key=lambda x: -x["tvl_usd"])
 
     def _usd_series(self, now_ms: int, usdcx_usd: Decimal) -> dict[str, list]:
-        """Hourly dollar series per token from Cantex candles (X-CC times CC-USDCX)."""
+        """Hourly dollar series per token from Cantex candles (X-CC times CC-USDCX). A market whose last
+        bar ended over ``m.CHANGE_MAX_AGE_MS`` ago is left out, so its token falls back to our own
+        five-minute samples: a pool that stopped trading keeps its last candle for days."""
         candles = self.slow.get("candles") or {}
         base = next((v for k, v in candles.items() if k.upper() == "CC-USDCX"), None)
-        if not base:
+        fresh = lambda bars: bars and now_ms - (max(c.start_ms for c in bars) + 3_600_000) <= m.CHANGE_MAX_AGE_MS  # noqa: E731
+        if not fresh(base):
             return {}
         # a close belongs to the END of its bar
         cc_at = {c.start_ms + 3_600_000: c.close for c in base}
         series = {CC: [(t, float(p * usdcx_usd)) for t, p in sorted(cc_at.items())]}
         for market, bars in candles.items():
             b, _, q = market.upper().rpartition("-")
-            if q != CC or not b:
+            if q != CC or not b or not fresh(bars):
                 continue
             pts = [(c.start_ms + 3_600_000, float(c.close * cc_at[c.start_ms + 3_600_000] * usdcx_usd))
-                   for c in bars if c.start_ms + 3_600_000 in cc_at]
+                   for c in sorted(bars, key=lambda c: c.start_ms) if c.start_ms + 3_600_000 in cc_at]
             if pts:
                 series[b] = pts
         return series
@@ -700,31 +760,34 @@ class Collector:
         stable = books.get(USDCX)
         if not stable:
             raise RuntimeError("no CC/USDCx pool on any venue")
-        cc_usd = m.cc_usd(list(stable.values()), usdcx_usd)
+        t_ob, t_books, temple_cc, temple_cc_book = await self._temple_spot(books, usdcx_usd)
+        # Temple's CC/USDCx book is one of the CC/USDCx markets: it weighs in the CC price by its depth
+        # (as every token's price weighs its venues) and joins every CC/USDCx comparison (best
+        # execution, the scanner, the paper router, the dollar routes' CC leg); the token list and the
+        # pool tables stay the pools'
+        cc_markets = stable
+        if temple_cc_book is not None and temple_cc_book.bids and temple_cc_book.asks:
+            cc_markets = {**stable, "temple": m.CCBook("temple", next(iter(stable.values())).token, temple_cc_book)}
+        cmp_books = {**books, USDCX: cc_markets}
+        cc_usd = m.cc_price_usd(cc_markets, usdcx_usd)
         self.cc_usd_last = cc_usd
 
         ob, ob_books, rocky_spot_vol = await self._rocky_spot(books, cc_usd, usdcx_usd)
-        t_ob, t_books, temple_cc, temple_cc_book = await self._temple_spot(books, usdcx_usd)
         for k, v in t_ob.items():
             ob.setdefault(k, {}).update(v)
         for k, v in t_books.items():
             ob_books.setdefault(k, {}).update(v)
-        perps = await self._perps(gecko, cc_usd)
-        # Temple's CC/USDCx book joins every CC/USDCx comparison (best execution, the scanner, the paper
-        # router) but not the CC price, the token prices or the pool tables, which stay the pools'
-        cmp_books = books
-        if temple_cc_book is not None and temple_cc_book.bids and temple_cc_book.asks:
-            cmp_books = {**books, USDCX: {**stable, "temple": m.CCBook(
-                "temple", next(iter(stable.values())).token, temple_cc_book)}}
+        perps = await self._perps(gecko, cc_usd, now)
         prices = self._prices(books, cc_usd, ob)
 
         series = self._usd_series(now_ms, usdcx_usd)
+        self._mark_steps(now)
         self._record(now, cc_usd, prices)
         own = self._own_series()
 
         tokens = self._tokens(books, cc_usd, tickers, series, own, now_ms, ob, prices)
-        premium = self._premium(books, cc_usd, gecko, ob, prices, temple_cc)
-        dollar = {k: m.DollarRoutes(books[k], stable, b, usdcx_usd) for k, b in ob_books.items()}
+        premium = self._premium(books, cc_usd, gecko, ob, prices, temple_cc, now)
+        dollar = {k: m.DollarRoutes(books[k], cc_markets, b, usdcx_usd) for k, b in ob_books.items()}
         cc_pairs = self._execution(cmp_books, cc_usd)
         # CC/USDCx stays the default view; order-book tokens in dollars come right after it
         execution = cc_pairs[:1] + self._usd_execution(books, dollar, prices, cc_usd) + cc_pairs[1:]
@@ -750,7 +813,9 @@ class Collector:
                 exec_history.record(self.state / "exec", now, execution, m.fee_table_json())
         except Exception:  # noqa: BLE001
             log.exception("execution history")
-        write_json(self.api / "scan.json", {"t": now, "round_trip_cost_cc": float(m.ROUND_TRIP_COST_CC),
+        # each route carries its own cost_cc: every venue's network fee, plus the CC/USDCx leg's on a
+        # route through a pool
+        write_json(self.api / "scan.json", {"t": now,
                                             "swap_cost_cc": {v: float(m.swap_cost_cc(v, cc_usd)) for v in
                                                              ("cantex", "tradecraft", "oneswap", "poolparty", "rocky",
                                                               "temple")},
@@ -875,6 +940,12 @@ class Collector:
 
     # === sections ==========================================================
 
+    def _mark_steps(self, now: int) -> None:
+        """Record each method step (``STEPS``) once, at the first tick computed the new way."""
+        steps = self.history.setdefault("steps", [])
+        done = {s["id"] for s in steps}
+        steps += [{**s, "t": now} for s in STEPS if s["id"] not in done]
+
     def _record(self, now: int, cc_usd: Decimal, prices) -> None:
         h = self.history
         h["t"].append(now)
@@ -908,9 +979,14 @@ class Collector:
                 vol_cx[target] = vol_cx.get(target, 0) + float(t["base_volume"]) * float(cc_usd)
         tc_vol = self.slow.get("tc_volume", {})
         pp_vol, _ = self._pp_volume_usd(cc_usd)
-        # Temple quotes everything in USDCx, which the settled-volume route already reports in dollars
-        temple_vol = {m.key(s.partition("/")[0]): v for s, v in (self.slow.get("temple_volume") or {}).items()
-                      if s.endswith("/USDCx")}
+        # Temple quotes everything in USDCx, which the settled-volume route already reports in dollars.
+        # Its CC/USDCx market is credited to USDCx, as every CC/USDCx pool's volume is
+        temple_vol: dict[str, float] = {}
+        for s, v in (self.slow.get("temple_volume") or {}).items():
+            base, _, quote = s.partition("/")
+            if quote == "USDCx":
+                k = m.key(quote) if m.key(base) == CC else m.key(base)
+                temple_vol[k] = temple_vol.get(k, 0.0) + v
         out = []
         for sym, pools in books.items():
             price = prices[sym]
@@ -939,6 +1015,10 @@ class Collector:
                 "price_usd": r(price, 8),
                 "liquidity_usd": r(sum(x["liquidity_usd"] for x in venues.values()), 2),
                 "volume_24h_usd": r(vol, 2),
+                # False when it traded nowhere in 24h (OneSwap publishes no volume, so a token there is
+                # unknown): its price is then CC's times a frozen ratio, and alerts and the pegs post
+                # skip it (USDM1's pool did not trade for 8 days while CC walked it "off its peg")
+                "traded_24h": None if vol == 0 and "oneswap" in venues else vol > 0,
                 "change_24h": r(m.change(src, now_ms, 86400_000)),
                 "change_7d": r(m.change(src, now_ms, 7 * 86400_000)),
                 "history_source": "cantex candles" if sym in series else "own samples",
@@ -947,10 +1027,11 @@ class Collector:
             })
         return sorted(out, key=lambda t: -(t["liquidity_usd"] or 0))
 
-    def _premium(self, books, cc_usd, gecko, ob, prices, temple_cc=None) -> list[dict]:
+    def _premium(self, books, cc_usd, gecko, ob, prices, temple_cc=None, now: int | None = None) -> list[dict]:
         rows = []
         h = self.history
         n = len(h["t"])
+        now = now or int(time.time())
 
         def keep(sym, val):
             col = h["premium"].setdefault(sym, [None] * (n - 1))
@@ -959,17 +1040,27 @@ class Collector:
 
         candidates = [(CC, None)] + [(s, p) for s, p in books.items()]
         for sym, pools in candidates:
+            missing = "no reference price"
             if sym in m.REFERENCES:
                 gid, label = m.REFERENCES[sym]
-                ref = gecko.get(gid, {}).get("usd")
+                if gid.startswith("spot:"):  # a metal's spot price, while its market trades (_metal)
+                    ref = self.metal_spot.get(gid[5:])
+                    if not m.metals_open(now):
+                        missing = "spot market closed"
+                else:  # a CoinGecko price, while it is fresh
+                    ref = _gecko_usd(gecko, gid, now)
                 kind = "reference"
+            elif sym in m.NO_SPOT:
+                rows.append({"key": sym, "kind": "reference", "reference": m.NO_SPOT[sym],
+                             "status": "no spot price connected"})
+                continue
             elif sym in m.STABLES:
                 gid, label, ref, kind = None, "1.00 peg", 1.0, "peg"
             else:
                 continue
             canton = cc_usd if sym == CC else prices[sym]
             if ref is None:
-                rows.append({"key": sym, "kind": kind, "reference": label, "status": "no reference price"})
+                rows.append({"key": sym, "kind": kind, "reference": label, "status": missing})
                 continue
             prem = m.premium(canton, Decimal(str(ref)))
             per_venue = {}
@@ -1036,10 +1127,12 @@ class Collector:
 
     def _paper(self, books, cc_usd, scan, now) -> None:
         router = self.desk["router"]
-        if router.get("v") != 2:
+        if router.get("v") != 3:
             # v1 (to 2026-10-08) picked and scored fills before network fees; v2 nets each venue's
-            # fee (model.NETWORK_FEE) first. The record restarts at the change.
-            router = self.desk["router"] = {"v": 2, "fills": [], "n": 0, "extra_usd": 0.0, "by_venue": {}}
+            # fee (model.NETWORK_FEE) first; v3 (2026-10-14) starts after Temple's CC/USDCx book joined
+            # the routing (348 of the 400 v2 fills shown at 15:25 UTC were made without it). The
+            # record restarts at each change.
+            router = self.desk["router"] = {"v": 3, "fills": [], "n": 0, "extra_usd": 0.0, "by_venue": {}}
         pools = books.get(USDCX, {})
         side = "sell" if router["n"] % 2 == 0 else "buy"
         fill = m.route_order(pools, side, m.ROUTER_SIZE_USD, cc_usd,
@@ -1108,7 +1201,7 @@ class Collector:
             "status": "ok",
             "cc_usd": r(cc_usd, 8),
             "cc_change_24h": r(m.change(cc_series, now_ms, 86400_000)),
-            "cc_global_usd": r(gecko.get("canton-network", {}).get("usd"), 8),
+            "cc_global_usd": r(_gecko_usd(gecko, "canton-network", now), 8),
             "cc_image": self.slow.get("images", {}).get(CC),
             "cantex_24h": {"volume_cc": r(cx_volume.get("volume_cc"), 2),
                            "volume_usd": r(Decimal(cx_volume.get("volume_cc", 0)) * cc_usd, 2),

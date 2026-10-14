@@ -85,6 +85,25 @@ def set_daily(state: dict, slug: str, source: str, points: list, now: int) -> No
     state["daily"][slug] = {"source": source, "t": int(now), "points": merge_daily(keep, points, now)}
 
 
+def total_change(state: dict, now: int, figure: str = "spot_volume") -> float | None:
+    """The change in our own Canton total of ``figure`` over a day: the latest hourly sample against
+    the one a day before it. None without a sample in the last two hours, without one within an hour
+    of a day earlier, or when the two samples do not cover the same venues."""
+    h = state.get("hourly") or {}
+    ts = h.get("t") or []
+    if not ts or now - ts[-1] > 7200:
+        return None
+    j = min(range(len(ts)), key=lambda k: abs(ts[k] - (ts[-1] - 86400)))
+    if abs(ts[j] - (ts[-1] - 86400)) > 3600:
+        return None
+    cols = [c[figure] for c in (h.get("venues") or {}).values() if figure in c]
+    then, latest = [c[j] for c in cols], [c[-1] for c in cols]
+    if [x is None for x in then] != [x is None for x in latest]:
+        return None
+    base = sum(x for x in then if x is not None)
+    return sum(x for x in latest if x is not None) / base - 1 if base > 0 else None
+
+
 def record_hourly(state: dict, now: int, facts: dict[str, dict]) -> bool:
     """One sample of every venue's figures, at most once an hour. True when one was taken."""
     h = state.setdefault("hourly", {"t": [], "venues": {}})

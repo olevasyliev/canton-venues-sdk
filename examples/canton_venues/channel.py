@@ -152,6 +152,11 @@ def execution_post(samples: list[dict]) -> Post | None:
     if not wins:
         return None
     span = _span(samples[-1]["t"] - samples[0]["t"])
+    # the venues compared on the pair whose network fee is assumed, named in the closing line
+    fees = samples[-1].get("network_fee") or {}
+    compared = {v for s in samples for v in (s.get("venues") or {}).get(EXEC_PAIR, [])}
+    assumed = sorted(NAMES.get(v, v) for v, f in fees.items()
+                     if f.get("basis") == "assumed" and (v in compared or not compared))
     lines = [f"🏁 <b>Where a CC trade got the best price</b>, {span}", ""]
     for size in EXEC_SIZES:
         c = wins.get(size)
@@ -165,9 +170,13 @@ def execution_post(samples: list[dict]) -> Post | None:
             line += ", " + ", ".join(f"{NAMES.get(v, v)} {x * 100 // n}%" for v, x in ranked[1:3])
         line += f". The next venue returned a median {statistics.median(edges[size]) / 100:.2f}% less"
         lines.append(line)
-    lines += ["", "Buys and sells of CC for USDCx, checked every hour. Pool fees, price impact and each "
-              "venue's network fee included.",
-              f'🔗 <a href="{SITE}/#execution">Live best execution</a>']
+    note = ("Buys and sells of CC for USDCx, checked every hour. Pool fees, price impact and each venue's "
+            "network fee included")
+    if assumed:
+        n = (", ".join(assumed[:-1]) + " and " + assumed[-1]) if len(assumed) > 1 else assumed[0]
+        each = next(f for f in fees.values() if f.get("basis") == "assumed")
+        note += f"; {n} publish no network fee, so theirs is assumed at {each['point']:g} {each['unit'].upper()}"
+    lines += ["", note + ".", f'🔗 <a href="{SITE}/#execution">Live best execution</a>']
     return Post("execution", "\n".join(lines))
 
 
@@ -175,17 +184,25 @@ def execution_post(samples: list[dict]) -> Post | None:
 
 def pegs_post(history: dict, tokens: list[dict], symbols: dict[str, str], now: int) -> Post | None:
     """Stablecoins: share of the week within 0.5% of $1 and the worst reading. Reference assets: the
-    median premium to their outside price. Only tokens with ``MIN_LIQUIDITY_USD`` in pools today."""
+    median premium to their outside price. Only tokens with ``MIN_LIQUIDITY_USD`` in pools today that
+    traded in the last 24h (a pool that does not trade only retells CC's moves). A premium is read
+    only from its last method step on (history "steps"), and the line says since when."""
     ts = history.get("t") or []
     lo = next((i for i, t in enumerate(ts) if t >= now - WEEK_S), None)
     if lo is None or not ts or ts[-1] - ts[lo] < 3 * 86400:
         return None
     liq = {t["key"]: t.get("liquidity_usd") or 0 for t in tokens}
+    idle = {t["key"] for t in tokens if t.get("traded_24h") is False}
+    since: dict[str, int] = {}
+    for s in history.get("steps") or []:
+        if s.get("premium"):
+            for k in s["keys"]:
+                since[k] = max(since.get(k, 0), s["t"])
     span = _span(ts[-1] - ts[lo])
     stable, ref = [], []
     for key, col in (history.get("premium") or {}).items():
-        pts = [(t, v) for t, v in zip(ts[lo:], col[lo:]) if v is not None]
-        if len(pts) < 100:
+        pts = [(t, v) for t, v in zip(ts[lo:], col[lo:]) if v is not None and t >= since.get(key, 0)]
+        if len(pts) < 100 or key in idle:
             continue
         name = symbols.get(key, key)
         if key in STABLES and liq.get(key, 0) >= MIN_LIQUIDITY_USD:
@@ -193,7 +210,10 @@ def pegs_post(history: dict, tokens: list[dict], symbols: dict[str, str], now: i
             worst_t, worst = held_worst(pts, HELD_SAMPLES)
             stable.append((inside, name, worst, worst_t))
         elif key in REFERENCES and (key == "CC" or liq.get(key, 0) >= MIN_LIQUIDITY_USD):
-            ref.append((name, REFERENCES[key][1], statistics.median(v for _, v in pts)))
+            label = REFERENCES[key][1]
+            if since.get(key, 0) > ts[lo] + 86400:  # a shorter run than the post's span
+                label += f" (since {datetime.fromtimestamp(since[key], UTC).strftime('%-d %b')})"
+            ref.append((name, label, statistics.median(v for _, v in pts)))
     if not stable and not ref:
         return None
     lines = [f"💵 <b>Stablecoins on Canton</b>, {span}"]

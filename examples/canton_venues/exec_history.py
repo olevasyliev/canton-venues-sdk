@@ -25,13 +25,15 @@ def _last_t(path: Path) -> int | None:
 
 
 def sample(now: int, pairs: list[dict], fees: dict) -> dict:
-    """One line: ``rows`` as [pair, side, size, best, edge_bps, best_net, edge_net_bps]."""
+    """One line: ``rows`` as [pair, side, size, best, edge_bps, best_net, edge_net_bps], and the
+    venues each pair compared (from 2026-10-14)."""
     rows = []
     for p in pairs:
         for r in p["rows"]:
             rows.append([p["key"], r["side"], r["size_usd"], r["best"], round(r["edge_bps"], 2),
                          r.get("best_net"), round(r.get("edge_net_bps") or 0.0, 2)])
-    return {"t": int(now), "network_fee": fees, "rows": rows}
+    return {"t": int(now), "network_fee": fees, "rows": rows,
+            "venues": {p["key"]: sorted(p.get("venues") or []) for p in pairs}}
 
 
 def record(directory: Path, now: int, pairs: list[dict], fees: dict) -> bool:

@@ -11,32 +11,52 @@ import math
 import statistics
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 CC = "CC"
 SIZES_USD = (100, 1_000, 10_000, 50_000)
 ROUTER_SIZE_USD = 1_000
-# Round-trip network cost deducted before a spread counts. An assumption, not a
-# measurement: Cantex charged 0.82-1.24 CC per swap when measured on
-# 2026-10-02, Tradecraft does not publish its cost. 3 CC covers two swaps.
-ROUND_TRIP_COST_CC = Decimal(3)
 MIN_ROUTE_USD = Decimal("0.50")
 
-# Assets with an independent market outside Canton, and what they track.
-# CoinGecko ids. Stables are measured against the 1.00 peg instead.
+# Assets with an independent market outside Canton, and what they track. A CoinGecko id, or
+# "spot:XAU"/"spot:XAG" for a metal's spot price, which is Ekiden's index for its XAU/XAG perps
+# (collect.py): on 2026-10-14 it sat inside Swissquote's interbank bid/ask while PAXG ran +0.25% and
+# KAG +1.9% over spot, so a "premium" against them was the token's own premium (eXAG -1.8% shown,
+# +0.03% against spot). Stables are measured against the 1.00 peg instead.
 REFERENCES = {
     "CC": ("canton-network", "global CC markets"),
     "CETH": ("ethereum", "ETH"),
     "CBTC": ("bitcoin", "BTC"),
-    "SPYE": ("sp500-xstock", "SPYx"),
-    "QQQE": ("nasdaq-xstock", "QQQx"),
-    "EXAU": ("pax-gold", "gold, via PAXG"),
-    "EXAG": ("kinesis-silver", "silver, via KAG"),
+    "EXAU": ("spot:XAU", "gold spot"),
+    "EXAG": ("spot:XAG", "silver spot"),
 }
+# Tokens that track an outside asset we have no spot price for: the only keyless prices are tokenized
+# shares that carry their own premium (SPYx +0.59% and QQQx +0.34% over SPY and QQQ in market hours,
+# 2026-10-14), so no premium is shown for these until a spot source is connected.
+NO_SPOT = {"SPYE": "SPY", "QQQE": "QQQ"}
 STABLES = {"USDCX", "USDC.B", "FRXUSD.B", "USX", "TF-USDT", "USDXLR", "USDM1"}
 # A reference this far off is a unit mismatch (an ounce against a gram, say),
 # not a premium; it is reported as unmatched rather than shown as a number.
 MAX_PLAUSIBLE_PREMIUM = Decimal("0.25")
+# An outside price older than this is not a reference (CoinGecko's last_updated_at)
+REFERENCE_MAX_AGE_S = 900
+_NEW_YORK = ZoneInfo("America/New_York")
+
+
+def metals_open(t: int) -> bool:
+    """Whether spot gold and silver trade at unix time ``t``: Sunday 18:00 to Friday 17:00 New York
+    time, less the daily hour from 17:00 (Pyth's XAU/XAG schedule, read 2026-10-14). Holidays are not
+    modelled. Outside it the spot price stands at the last close while Canton keeps trading."""
+    d = datetime.fromtimestamp(t, UTC).astimezone(_NEW_YORK)
+    if d.weekday() == 5:
+        return False
+    if d.weekday() == 6:
+        return d.hour >= 18
+    if d.weekday() == 4:
+        return d.hour < 17
+    return d.hour != 17
 
 
 def key(symbol: str) -> str:
@@ -74,8 +94,24 @@ def blended_mid(pools: list[VenuePool]) -> Decimal:
 
 
 def cc_usd(stable_pools: list[VenuePool], usdcx_usd: Decimal) -> Decimal:
-    """CC in dollars: the blended CC/USDCx mid times USDCx's own dollar price."""
+    """The pools' CC/USDCx mid, blended by CC reserve, times USDCx's own dollar price."""
     return blended_mid(stable_pools) * usdcx_usd
+
+
+def cc_price_usd(markets: dict, usdcx_usd: Decimal) -> Decimal:
+    """CC in dollars across every CC/USDCx market, pools and order books (``CCBook``) alike, each
+    weighted by the dollars it can trade within 1% of its own mid: the rule every token's price uses.
+
+    Until 2026-10-14 CC was the pools' blend by CC reserve, which left out Temple's book: ~$2M within
+    1% against ~$7K in all four pools, so the pools' thin quote set the price (0.17-0.51% above
+    Temple's mid) and the sign of the CC premium.
+    """
+    quotes = []
+    for p in markets.values():
+        px = p.mid * usdcx_usd
+        quotes.append((px, p.depth_usd() if isinstance(p, CCBook) else amm_depth_usd(p, px)))
+    pools = [p for p in markets.values() if not isinstance(p, CCBook)]
+    return weighted_usd(quotes) or cc_usd(pools, usdcx_usd)
 
 
 def token_usd(pools: list[VenuePool], cc_in_usd: Decimal) -> Decimal:
@@ -250,8 +286,8 @@ def scan(books: dict[str, dict[str, VenuePool]], cc_in_usd: Decimal) -> list[dic
 
 # === order books against pools, in dollars ================================
 
-# Network cost of one swap on Canton, the same assumption as ROUND_TRIP_COST_CC (3 CC for two).
-SWAP_COST_CC = ROUND_TRIP_COST_CC / 2
+# The network fee assumed for a venue that publishes none (``NETWORK_FEE`` basis "assumed").
+SWAP_COST_CC = Decimal("1.5")
 # The network fee a trader pays per trade on each venue, on top of its trading or pool fee: the one
 # table every figure reads (best execution, the scanner, the paper desk, venue headlines). Each entry
 # is (unit, point, low, high, basis): "usd" or "cc"; ``point`` is the best estimate every net figure
@@ -259,8 +295,9 @@ SWAP_COST_CC = ROUND_TRIP_COST_CC / 2
 # "assumed". Only a measured or documented fee can carry a best-price claim; an assumed one fills the
 # net figures and is shown as an assumption. Replace an entry when it is measured from our own trades.
 NETWORK_FEE: dict[str, tuple[str, Decimal, Decimal, Decimal, str]] = {
-    # median of 96 authenticated quotes over two hours, 2026-10-03 (0.67 EDELx to 1.20 CC/USDCx)
-    "cantex": ("cc", Decimal("0.86"), Decimal("0.86"), Decimal("0.86"), "measured"),
+    # median of 96 authenticated quotes over two hours, 2026-10-03, ranging 0.67 (EDELx) to 1.20 CC
+    # (CC/USDCx); a best-price claim must survive the whole range
+    "cantex": ("cc", Decimal("0.86"), Decimal("0.67"), Decimal("1.20"), "measured"),
     # docs.oneswap.cc: "typically around $1.5-2 at recent network prices"
     "oneswap": ("usd", Decimal("1.75"), Decimal("1.5"), Decimal("2.0"), "documented"),
     # docs.tradecraft.fi/fees-and-pricing "Gas: $0.10" (illustrative); high end: its DAR guide sizes an
@@ -273,8 +310,6 @@ NETWORK_FEE: dict[str, tuple[str, Decimal, Decimal, Decimal, str]] = {
     "rocky": ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed"),
     "poolparty": ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed"),
 }
-# The CC/USDCx leg of a dollar route is costed as a Cantex swap (its deepest stable pool).
-STABLE_LEG_VENUE = "cantex"
 
 
 _ASSUMED = ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed")
@@ -350,9 +385,10 @@ class CCBook:
     """An order book for CC itself (Temple's CC/USDCx), asked like a pool so it joins every CC
     comparison: best execution, the scanner and the paper router.
 
-    It has no reserves: ``cc_reserve`` is 0, so it weighs nothing in ``blended_mid`` (the CC price
-    stays the pools' blend), and it never enters the pool tables. ``out`` walks the book after its
-    taker fee; a book that runs out returns 0, which every comparison reads as "cannot fill".
+    It has no reserves: ``cc_reserve`` is 0, so it weighs nothing in ``blended_mid`` (the mid a ladder
+    converts sizes with) and never enters the pool tables. It does weigh in the CC price, by its
+    depth (``cc_price_usd``). ``out`` walks the book after its taker fee; a book that runs out
+    returns 0, which every comparison reads as "cannot fill".
     """
 
     venue: str
@@ -364,6 +400,13 @@ class CCBook:
     def mid(self) -> Decimal:
         """Quote token per CC: halfway between the best bid and the best ask."""
         return (self.book.bids[0][0] + self.book.asks[0][0]) / 2
+
+    def depth_usd(self, band: Decimal = DEPTH_BAND) -> Decimal:
+        """Dollars resting within ``band`` of mid on both sides, as ``book_depth_usd``."""
+        lo, hi = self.mid * (1 - band), self.mid * (1 + band)
+        total = sum((p * q for p, q in self.book.bids if p >= lo), Decimal(0))
+        total += sum((p * q for p, q in self.book.asks if p <= hi), Decimal(0))
+        return total * self.book.quote_usd
 
     def out(self, sell_cc: bool, amount: Decimal) -> Decimal:
         got = self.book.sell_base(amount) if sell_cc else self.book.buy_base(amount)
@@ -385,9 +428,9 @@ def book_from_json(d: dict) -> BookVenue:
 class DollarRoutes:
     """Buy or sell a token for dollars on each venue.
 
-    A pool route goes through CC: dollars (USDCx) to CC on the best CC/USDCx pool, then CC to the
-    token on that venue's pool, or back. A book route is one order. Every venue is asked about the
-    same dollar amount.
+    A pool route goes through CC: dollars (USDCx) to CC on the best CC/USDCx market, a pool or
+    Temple's book (``CCBook``), then CC to the token on that venue's pool, or back. A book route is
+    one order. Every venue is asked about the same dollar amount.
     """
 
     def __init__(self, pools: dict[str, VenuePool], stable: dict[str, VenuePool],
@@ -401,13 +444,27 @@ class DollarRoutes:
     def swaps(self, venue: str) -> int:
         return 1 if venue in self.books else 2
 
+    def _buy_leg(self, usd: Decimal) -> tuple[str, Decimal]:
+        leg, cc, _ = best_leg(self.stable, False, usd / self.usdcx_usd)
+        return leg, cc
+
+    def _sell_leg(self, venue: str, qty: Decimal) -> tuple[str, Decimal]:
+        leg, usdcx, _ = best_leg(self.stable, True, self.pools[venue].out(False, qty))
+        return leg, usdcx
+
+    def leg(self, venue: str, side: str, amount: Decimal) -> str | None:
+        """The CC/USDCx market that fills a pool route's dollar leg (None for a book route), so the
+        route pays that market's network fee: ``amount`` is dollars on a buy, the token on a sell."""
+        if venue in self.books:
+            return None
+        return self._buy_leg(amount)[0] if side == "buy" else self._sell_leg(venue, amount)[0]
+
     def buy(self, venue: str, usd: Decimal) -> Decimal | None:
         """Token received for ``usd`` dollars."""
         if venue in self.books:
             b = self.books[venue]
             return b.buy_base(usd / b.quote_usd)
-        _, cc, _ = best_leg(self.stable, False, usd / self.usdcx_usd)
-        return self.pools[venue].out(True, cc)
+        return self.pools[venue].out(True, self._buy_leg(usd)[1])
 
     def sell(self, venue: str, qty: Decimal) -> Decimal | None:
         """Dollars received for ``qty`` of the token."""
@@ -415,9 +472,7 @@ class DollarRoutes:
             b = self.books[venue]
             got = b.sell_base(qty)
             return None if got is None else got * b.quote_usd
-        cc = self.pools[venue].out(False, qty)
-        _, usdcx, _ = best_leg(self.stable, True, cc)
-        return usdcx * self.usdcx_usd
+        return self._sell_leg(venue, qty)[1] * self.usdcx_usd
 
 
 def usd_ladder(routes: DollarRoutes, price_usd: Decimal, cc_in_usd: Decimal) -> list[dict]:
@@ -433,15 +488,17 @@ def usd_ladder(routes: DollarRoutes, price_usd: Decimal, cc_in_usd: Decimal) -> 
                 continue
             best = max(filled, key=filled.get)
             fair = qty if side == "buy" else usd  # what a trade at the Canton price would return
+            # a pool route is two swaps: the venue's own and the CC/USDCx leg, each with its network fee
+            legs = {v: routes.leg(v, side, usd if side == "buy" else qty) for v in filled if routes.swaps(v) == 2}
             rows.append({
                 "side": side, "size_usd": size, "amount_in": float(usd if side == "buy" else qty),
                 "out": {v: (float(o) if o is not None else None) for v, o in outs.items()},
                 "cost_bps": {v: float((1 - o / fair) * 10_000) for v, o in filled.items()},
                 "best": best,
                 "edge_bps": runner_up_bps(filled),
-                # a pool route is two swaps: the venue's own and the CC/USDCx leg (costed as Cantex)
-                **net_of_fees(filled, {v: network_fee_usd(v, cc_in_usd) + (network_fee_usd(STABLE_LEG_VENUE, cc_in_usd)
-                                                                         if routes.swaps(v) == 2 else 0)
+                "stable_leg": legs,
+                **net_of_fees(filled, {v: network_fee_usd(v, cc_in_usd) + (network_fee_usd(legs[v], cc_in_usd)
+                                                                         if v in legs else 0)
                                        for v in filled}, price_usd if side == "buy" else Decimal(1)),
             })
     return rows
@@ -480,10 +537,11 @@ def usd_scan(token: str, routes: DollarRoutes, cc_in_usd: Decimal) -> list[dict]
             if buy == sell or not ({buy, sell} & set(routes.books)):
                 continue  # pool-to-pool trips are already in ``scan``, priced in CC
             x, g = usd_round_trip(routes, buy, sell, cc_in_usd)
-            # a pool route is the CC/USDCx leg (taken at the default cost) plus the venue's own swap
-            stable_leg = swap_cost_cc(STABLE_LEG_VENUE, cc_in_usd)
-            cost_cc = sum(swap_cost_cc(v, cc_in_usd) + (stable_leg if routes.swaps(v) == 2 else 0)
-                          for v in (buy, sell))
+            # a pool route is the venue's own swap plus the CC/USDCx leg, on whichever market fills it
+            qty = routes.buy(buy, x) or Decimal(0)
+            legs = [routes.leg(buy, "buy", x), routes.leg(sell, "sell", qty) if qty else None]
+            cost_cc = sum(swap_cost_cc(v, cc_in_usd) for v in (buy, sell))
+            cost_cc += sum(swap_cost_cc(leg, cc_in_usd) for leg in legs if leg)
             net_usd = g - cost_cc * cc_in_usd
             fp = "|".join(routes.books[v].fingerprint() if v in routes.books else fingerprint(routes.pools[v])
                           for v in (buy, sell))
@@ -560,14 +618,24 @@ def fee_apr(volume_usd_24h: float, fee: float, lp_share: float, tvl_usd: float) 
 # === history ===============================================================
 
 
-def change(series: list[tuple[int, float]], now_ms: int, window_ms: int) -> float | None:
-    """Relative change over ``window_ms`` from a (time_ms, value) series."""
-    if not series:
+CHANGE_MAX_AGE_MS = 2 * 3_600_000
+
+
+def change(series: list[tuple[int, float]], now_ms: int, window_ms: int,
+           max_age_ms: int = CHANGE_MAX_AGE_MS) -> float | None:
+    """Relative change over ``window_ms`` from a (time_ms, value) series.
+
+    None when the series has no point in the last ``max_age_ms`` (a market that stopped trading: on
+    2026-10-14 TRKXRWA's candles had ended on 7 Oct and its "24h change" read +1686%), or when its
+    last point before the window starts is more than an eighth of the window older than that start.
+    """
+    if not series or now_ms - series[-1][0] > max_age_ms:
         return None
     target = now_ms - window_ms
-    past = [v for t, v in series if t <= target]
-    if not past:
+    before = [(t, v) for t, v in series if t <= target]
+    if not before or target - before[-1][0] > window_ms // 8:
         return None
+    past = [v for _, v in before]
     # the median of the last three points before the window, so one wick in a thin pool (a
     # single trade that moved the price for an hour) is not taken as the starting price
     base = sorted(past[-3:])[len(past[-3:]) // 2]

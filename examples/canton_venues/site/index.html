@@ -508,8 +508,8 @@ body:not(.tv) #tokenview { display: none; }
 
   <footer class="foot">
     <div><h4>Canton Venues</h4><p>Built by <a href="https://github.com/olevasyliev">Oleksii</a> on <a href="https://github.com/olevasyliev/canton-venues-sdk">Canton Venues SDK</a>, open source. Read-only: nothing here is signed or executed.</p><p><a href="https://t.me/cantonvenues">Telegram channel</a> · <a href="#contact">Contact</a></p><p id="updated"></p></div>
-    <div><h4>Method</h4><p>Tokens are matched by Canton instrument (issuer party and id); Pool Party publishes no issuer, so its tokens match by instrument id. Cantex and Tradecraft are priced from live reserves with each venue's own formula, OneSwap and Pool Party from reserves as constant-product pools (their fee and curve as documented or, for Pool Party, as CCTools reports), Temple and Rocky from their order books. A token's Canton price weighs each venue by the dollars it can trade within 1% of its own mid. For an order book, liquidity is the dollars resting within 1% of mid.</p></div>
-    <div><h4>Data</h4><p>Temple's API (account key), and the Cantex, Tradecraft, OneSwap, Pool Party, Rocky and Ekiden public APIs, DefiLlama for ecosystem volume and TVL, CoinGecko for outside prices and logos. Temple's volume comes from its own public settled-volume route.</p></div>
+    <div><h4>Method</h4><p>Tokens are matched by Canton instrument (issuer party and id); Pool Party publishes no issuer, so its tokens match by instrument id. Cantex and Tradecraft are priced from live reserves with each venue's own formula, OneSwap and Pool Party from reserves as constant-product pools (their fee and curve as documented or, for Pool Party, as CCTools reports), Temple and Rocky from their order books. A token's Canton price weighs each venue by the dollars it can trade within 1% of its own mid, and so does Canton Coin's, across every CC/USDCx pool and Temple's CC/USDCx order book (since 14 Oct 2026; before, the pools alone). For an order book, liquidity is the dollars resting within 1% of mid. A 24h or 7d change needs a price from the last two hours; a market that stopped trading shows none.</p></div>
+    <div><h4>Data</h4><p>Temple's API (account key), and the Cantex, Tradecraft, OneSwap, Pool Party, Rocky and Ekiden public APIs, DefiLlama for Canton's TVL, CoinGecko for outside prices and logos, Ekiden's index for gold and silver spot. Temple's volume comes from its own public settled-volume route.</p></div>
   </footer>
 </main>
 
@@ -585,24 +585,27 @@ const premOf = (key) => (D.premium?.assets || []).find((a) => a.key === key && a
 
 /* ---------- strip, headline, cards ---------- */
 function renderTop() {
-  const s = D.summary, e = s.ecosystem || {};
+  const s = D.summary, e = s.ecosystem || {}, vn = D.venues || {};
   const stale = Date.now() / 1000 - s.t > 900 || s.status === "error";
-  const dch = e.dex_change_1d == null ? null : e.dex_change_1d / 100;
+  // our own reading of every venue we read; the only outside figure, DefiLlama's TVL, carries its day
+  const vol = vn.spot_volume_24h_usd, vch = vn.spot_volume_change_24h;
+  const tvlDay = e.tvl_day ? new Date(e.tvl_day + "T00:00:00Z").toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }) : null;
   $("gstrip").innerHTML = `
     <span>Tokens: <b>${s.tokens}</b></span>
     <span>On two venues: <b>${s.on_two_venues}</b></span>
-    <span>Canton DEX volume 24h: <b>${money(e.dex_volume_24h)}</b> ${dch == null ? "" : chg(dch)}</span>
-    <span>Canton DeFi TVL: <b>${money(e.tvl)}</b></span>
+    ${vol == null ? "" : `<span>DEX spot volume 24h: <b>${money(vol)}</b> ${vch == null ? "" : chg(vch)}</span>`}
+    ${e.tvl == null || !tvlDay ? "" : `<span title="DefiLlama's figure for ${tvlDay}">Canton DeFi TVL, ${tvlDay}: <b>${money(e.tvl)}</b></span>`}
     <span>Cantex swaps 24h: <b>${(s.cantex_24h.swaps || 0).toLocaleString("en-US")}</b></span>
     <span>CC: <b>${price(s.cc_usd)}</b></span>
     <span class="sp ${stale ? "stale" : ""}">${stale ? "Last good data " : "Updated "}${ago(s.t)}</span>`;
-  if (e.dex_volume_24h != null && dch != null) {
-    $("headline").innerHTML = `Canton's DEX volume over the last day is <b>${money(e.dex_volume_24h)}</b>, ${dch >= 0 ? "up" : "down"} <span class="${tone(dch)}">${pctAbs(dch, 1)}</span>. Canton Coin trades at <b>${price(s.cc_usd)}</b> on its DEXes, <span class="${tone(s.cc_change_24h)}">${pct(s.cc_change_24h)}</span> in 24 hours.`;
+  if (vol != null) {
+    $("headline").innerHTML = `Spot volume on the Canton DEXes we read was <b>${money(vol)}</b> over the last 24 hours${vch == null ? "" : `, ${vch >= 0 ? "up" : "down"} <span class="${tone(vch)}">${pctAbs(vch, 1)}</span> on the day before`}. Canton Coin trades at <b>${price(s.cc_usd)}</b> on its DEXes, <span class="${tone(s.cc_change_24h)}">${pct(s.cc_change_24h)}</span> in 24 hours.`;
   }
   $("updated").textContent = "Data updated " + ago(s.t) + ", every five minutes.";
 
   const toks = D.tokens?.tokens || [];
-  const venues = (e.venues || []).filter((v) => v.volume_24h > 0);
+  const venues = (vn.venues || []).filter((v) => v.kind !== "Perpetuals" && v.volume_24h_usd > 0)
+    .map((v) => ({ name: v.name, volume_24h: v.volume_24h_usd })).sort((a, b) => b.volume_24h - a.volume_24h);
   const vmax = Math.max(1, ...venues.map((v) => v.volume_24h));
   const prem = (D.premium?.assets || []).filter((a) => a.status === "ok" && a.kind === "reference").sort((a, b) => Math.abs(b.premium) - Math.abs(a.premium)).slice(0, 4);
   const movers = toks.filter((t) => t.change_24h != null && t.liquidity_usd >= 10000).sort((a, b) => b.change_24h - a.change_24h).slice(0, 4);
@@ -698,7 +701,8 @@ function renderPremium() {
         <span class="val num ${tone(a.premium)}">${pct(a.premium)}</span></div>`;
     }).join("")}<div class="key">${[...new Set(list.flatMap((a) => Object.keys(a.premium_by_venue || {})))].sort().map((v) => `<span><i style="background:${VC[v]}"></i>${V[v]}</span>`).join("")}</div></div>`;
   };
-  $("prem").innerHTML = group("Against an outside market", "BTC, ETH, gold, silver and stock tokens, priced on CoinGecko.", refs) +
+  const closed = (D.premium?.assets || []).filter((a) => a.status === "spot market closed").map((a) => a.reference.replace(" spot", ""));
+  $("prem").innerHTML = group("Against an outside market", "BTC, ETH and global CC from CoinGecko; gold and silver against their spot price (Ekiden's index) while the spot market trades." + (closed.length ? ` The ${closed.join(" and ")} spot market is closed now.` : ""), refs) +
     group("Stablecoins against $1.00", "The Canton price of each dollar token.", pegs);
   bindPremTip();
   const top = refs[0];
@@ -989,7 +993,7 @@ function renderDesk() {
       <div class="split">${shares.map(([v, c]) => `<i style="width:${c / n * 100}%;background:${VC[v]}"></i>`).join("")}</div>
       <div class="splitkey">${shares.map(([v, c]) => `<span>${V[v]} ${Math.round(c / n * 100)}%</span>`).join("")}</div>
       <table class="mini"><tbody>${(r.fills || []).slice(-5).reverse().map((f) => `<tr><td class="l num muted">${hm(f.t)}</td><td class="l">${f.side === "sell" ? "Sell" : "Buy"} CC</td><td class="l" style="color:${VC[f.venue]};font-weight:600">${V[f.venue]}</td><td class="num up">+${(f.edge_bps / 100).toFixed(2)}%</td></tr>`).join("")}</tbody></table>
-      <p class="sub" style="margin:12px 0 0">Paper: priced off live pool state. Pools never move, network fees are not deducted, and the gap is measured against the next-best venue, so it is a choice worth making, not profit.</p>`;
+      <p class="sub" style="margin:12px 0 0">Paper: priced off live pool and order-book state, after each venue's network fee (assumed at 1.5 CC where a venue publishes none). Prices never move from our orders, and the gap is measured against the next-best venue, so it is a choice worth making, not profit.</p>`;
   }
   const routes = (D.scan?.routes || []).slice(0, 5), trades = a.trades || [];
   const d24 = a.last_24h || {};

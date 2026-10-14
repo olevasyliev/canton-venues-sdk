@@ -79,10 +79,14 @@ async def sample(c: Collector) -> dict:
     tcp = await c.tradecraft.pools()
     books = c._books(cx, tc, tcp, Decimal("0.9"))
     await c._reserve_venues(books, cx)
-    cc_usd = m.cc_usd(list(books[USDCX].values()), Decimal(1))
+    _, t_books, _, cc_book = await c._temple_spot(books, Decimal(1))
+    # Temple's CC/USDCx book prices CC and fills the dollar routes' CC leg, as on the site; the CC pairs
+    # below stay pool to pool, since the study fingerprints pool reserves
+    cc_markets = dict(books[USDCX])
+    if cc_book is not None and cc_book.bids and cc_book.asks:
+        cc_markets["temple"] = m.CCBook("temple", next(iter(books[USDCX].values())).token, cc_book)
+    cc_usd = m.cc_price_usd(cc_markets, Decimal(1))
     _, ob_books, _ = await c._rocky_spot(books, cc_usd, Decimal(1))
-    # Temple's CC/USDCx book (the fourth value) is left out here: the study fingerprints pool reserves
-    _, t_books, _, _ = await c._temple_spot(books, Decimal(1))
     for k, v in t_books.items():
         ob_books.setdefault(k, {}).update(v)
     routes = []
@@ -91,7 +95,7 @@ async def sample(c: Collector) -> dict:
         routes.append((f'{r["token"]}:{r["buy_on"]}>{r["sell_on"]}', r["net_usd"], r["size_usd"],
                        m.fingerprint(pools[r["buy_on"]], pools[r["sell_on"]])))
     for k, b in ob_books.items():
-        for r in m.usd_scan(k, m.DollarRoutes(books[k], books[USDCX], b, Decimal(1)), cc_usd):
+        for r in m.usd_scan(k, m.DollarRoutes(books[k], cc_markets, b, Decimal(1)), cc_usd):
             routes.append((f'{r["token"]}:{r["buy_on"]}>{r["sell_on"]}', r["net_usd"], r["size_usd"], r["fp"]))
     return {"t": int(time.time()), "routes": routes}
 

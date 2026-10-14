@@ -85,7 +85,8 @@ VOLUME_BASIS = {"temple": "usd", "tradecraft": "usd", "cantex": "cc", "poolparty
 # What the page states about how each venue is read, next to the numbers it qualifies.
 CAVEATS = {
     "temple": ["Taker fee 1 bp is Temple's published rate.",
-               "Temple's CC/USDCx book feeds the CC premium board, not the token list."],
+               "Temple's CC/USDCx book is in every CC/USDCx comparison and in the CC price (weighted by "
+               "its depth), not in the token list."],
     "rocky": ["Taker fee 0.025% is assumed: Rocky publishes no fee schedule.",
               "Books quoted in USDC.B are valued at par ($1), not at USDC.B's pool price.",
               "Dollar routes compare Rocky's USDCx books only."],

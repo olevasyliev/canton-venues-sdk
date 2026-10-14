@@ -89,9 +89,11 @@ server = MCPServer(
 
 @server.tool(title="Canton DEX market overview")
 def market_overview() -> dict:
-    """Canton DEX market right now: CC price, ecosystem volume and TVL, top movers, the largest
-    premiums to global prices, and the latest alerts."""
+    """Canton DEX market right now: CC price, spot volume per venue we read, Canton's TVL for the day
+    named, top movers, the largest premiums to global prices, and the latest alerts."""
     s = load("summary")
+    v = load("venues")
+    eco = s.get("ecosystem") or {}
     toks = [t for t in load("tokens")["tokens"] if (t.get("liquidity_usd") or 0) >= 20_000
             and t["key"] not in m.STABLES and t.get("change_24h") is not None]
     toks.sort(key=lambda t: t["change_24h"], reverse=True)
@@ -103,9 +105,13 @@ def market_overview() -> dict:
         "cc_usd": s["cc_usd"],
         "cc_change_24h": s.get("cc_change_24h"),
         "cc_global_usd": s.get("cc_global_usd"),
-        "canton_dex_volume_24h_usd": (s.get("ecosystem") or {}).get("dex_volume_24h"),
-        "volume_by_venue_24h_usd": {v["name"]: v["volume_24h"] for v in (s.get("ecosystem") or {}).get("venues", [])},
-        "canton_defi_tvl_usd": (s.get("ecosystem") or {}).get("tvl"),
+        # our own reading of every venue's last 24 hours, the same figures as venues.json
+        "spot_volume_24h_usd": v.get("spot_volume_24h_usd"),
+        "spot_volume_change_24h": v.get("spot_volume_change_24h"),
+        "spot_volume_by_venue_24h_usd": {x["name"]: x["volume_24h_usd"] for x in v.get("venues", [])
+                                         if x["kind"] != "Perpetuals" and x.get("volume_24h_usd")},
+        "canton_defi_tvl_usd": eco.get("tvl"),
+        "canton_defi_tvl_day": eco.get("tvl_day"),
         "cantex_swaps_24h": (s.get("cantex_24h") or {}).get("swaps"),
         "top_gainers_24h": [{"symbol": t["symbol"], "change": t["change_24h"]} for t in toks[:5]],
         "top_losers_24h": [{"symbol": t["symbol"], "change": t["change_24h"]} for t in toks[::-1][:5]],
@@ -220,8 +226,9 @@ def _book_quote(sell: str, buy: str, amount: Decimal) -> dict | None:
 
 @server.tool(title="Canton premium to global prices")
 def premiums(kind: str = "all") -> dict:
-    """How far Canton DEX prices sit from outside markets: CBTC vs BTC, cETH vs ETH, gold, silver,
-    stock tokens, CC vs global CC, and every stablecoin vs $1. kind: all, reference or peg."""
+    """How far Canton DEX prices sit from outside markets: CBTC vs BTC, cETH vs ETH, eXAU and eXAG vs
+    gold and silver spot (while the spot market trades), CC vs global CC, and every stablecoin vs $1.
+    kind: all, reference or peg."""
     rows = [a for a in load("premium")["assets"] if a["status"] == "ok" and (kind == "all" or a["kind"] == kind)]
     rows.sort(key=lambda a: -abs(a["premium"]))
     return {"as_of": load("premium")["t"], "assets": [
@@ -232,11 +239,12 @@ def premiums(kind: str = "all") -> dict:
 
 @server.tool(title="Cross-venue spreads")
 def spreads(limit: int = 10) -> dict:
-    """Buy-on-one-venue, sell-on-the-other round trips at their best size, after network cost of
-    1.5 CC per swap (3 CC pool to pool; trips through Rocky's order book, marked via=usd, are
-    three swaps and carry their own cost_cc). `clears` is true when one nets at least $0.50."""
+    """Buy-on-one-venue, sell-on-the-other round trips at their best size, after each venue's network
+    fee: `cost_cc` per route, `swap_cost_cc` per venue (Cantex measured, OneSwap and Tradecraft
+    documented, the rest assumed at 1.5 CC). A trip through an order book in dollars (via=usd) also
+    pays the CC/USDCx leg of each pool side. `clears` is true when one nets at least $0.50."""
     s = load("scan")
-    return {"as_of": s["t"], "round_trip_cost_cc": s["round_trip_cost_cc"], "routes": s["routes"][:max(1, min(limit, 50))]}
+    return {"as_of": s["t"], "swap_cost_cc": s.get("swap_cost_cc"), "routes": s["routes"][:max(1, min(limit, 50))]}
 
 
 @server.tool(title="Recent alerts")
