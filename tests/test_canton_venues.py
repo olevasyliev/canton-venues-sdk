@@ -241,7 +241,7 @@ def test_swap_cost_uses_a_venues_own_stated_fee():
     assert m.swap_cost_cc("cantex", Decimal("0.125")) == m.NETWORK_FEE["cantex"][1]  # measured
     assert m.swap_cost_cc("tradecraft", Decimal("0.125")) == Decimal("0.8")  # documented $0.10
     assert m.swap_cost_cc("rocky", Decimal("0.125")) == Decimal("1.5")  # assumed
-    assert m.swap_cost_cc("oneswap", Decimal("0.125")) == Decimal(14)  # $1.75 at $0.125
+    assert m.swap_cost_cc("oneswap", Decimal("0.125")) == Decimal("10.4")  # its measured $1.30 at $0.125
 
 
 def test_router_compares_with_the_runner_up_not_the_worst():

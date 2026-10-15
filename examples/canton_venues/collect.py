@@ -1070,6 +1070,11 @@ class Collector:
             for tok, fee in (rec.get("cantex_fee_cc") or {}).items():
                 if (d := _num(fee)) is not None and d > 0:
                     m.PAIR_FEE_CC[("cantex", frozenset((CC, m.key(tok))))] = d
+            # OneSwap's differs by direction (carved from what is sold): "CC>USDCX", "USDCX>CC"
+            for pair, fee in (rec.get("oneswap_fee_cc") or {}).items():
+                frm, _, to = pair.partition(">")
+                if to and (d := _num(fee)) is not None and d > 0:
+                    m.PAIR_FEE_CC[("oneswap", frm, to)] = d
 
     async def _tick(self) -> None:
         started = time.monotonic()

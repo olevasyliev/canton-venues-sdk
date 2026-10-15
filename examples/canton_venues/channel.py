@@ -32,9 +32,9 @@ SCHEDULE = {0: "weekly", 1: "venue", 2: "execution", 3: "venue", 4: "pegs"}
 # F 2026-10-15: a price claim in the channel (a best price, a spread, a peg, a premium) needs our quotes
 # checked against the venues' own: the quote check (quotecheck.py, hourly) must have passed for
 # Tradecraft and Cantex within ``CHECK_MAX_AGE_S``, and a claim may name only a venue whose prices are
-# checked: those two, whose quote engines our math matched, and the order books (Temple, Rocky: the
-# book is the venue's own data). OneSwap and Pool Party publish no quote to check against, so no claim
-# names them. Without a passing check the channel says only what a venue's API confirms (volume,
+# checked: the AMMs whose quote engines our math matched in that check (Tradecraft, Cantex, OneSwap
+# with our SDK key) and the order books (Temple, Rocky: the book is the venue's own data). Pool Party
+# publishes no quote to check against, so no claim names it. Without a passing check the channel says only what a venue's API confirms (volume,
 # liquidity, depth, counts): no execution or pegs post, no price-headline card, no loud alert.
 CHECK_MAX_AGE_S = 3 * 3600
 BOOK_VENUES = {"temple", "rocky"}

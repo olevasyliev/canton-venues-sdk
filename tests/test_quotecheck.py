@@ -157,3 +157,36 @@ def test_an_order_book_with_an_empty_side_is_no_market():
         m.book_hop(b, "CBTC", "USDCX")
     raw = {"cc_usd": "0.1", "pools": {}, "books": {"CBTC": {"CBTC-USDCX": m.book_to_json(b, "USDCX")}}}
     assert not any(m.venue_hops(raw).values())  # skipped, not a crash in the MCP quote
+
+
+# --- OneSwap: checked against its own quotes, its fee by direction ----------------------------------
+
+def test_oneswap_is_priced_on_the_input_less_the_fee_its_quote_names():
+    pools = {"USDCx": (D(1_000_000), D(106_000), D("0.003"))}
+
+    async def read():
+        return pools
+
+    async def quote(tok, sell_cc, amount):  # OneSwap: fee carved from the input, in input units
+        fee_in = D("11.56") if sell_cc else D("1.478")
+        return m.FORMULAS["cp"](*pools[tok])(sell_cc, amount - fee_in), fee_in
+    rows = asyncio.run(qc._check("oneswap", read, quote, "cp", CC_USD, fee_from_input=True))
+    assert all(r["ok"] and r["gap_bp"] == 0 for r in rows)
+    fees = qc.oneswap_fees(rows)
+    assert fees["CC>USDCX"] == D("11.56")
+    assert fees["USDCX>CC"] == pytest.approx(D("1.478") * D(1_000_000) / D(106_000), rel=D("1e-6"))  # in CC
+
+
+def test_a_fee_by_direction_is_charged_by_what_is_sold():
+    m.PAIR_FEE_CC.clear()
+    m.PAIR_FEE_CC[("oneswap", m.CC, "USDCX")] = D("11.56")
+    m.PAIR_FEE_CC[("oneswap", "USDCX", m.CC)] = D("13.84")
+    try:
+        hop = m.Hop("oneswap", m.CC, "USDCX", D("0.106"), lambda a, x: x)
+        assert m.swap_fee_usd("oneswap", CC_USD, hop, m.CC) == D("11.56") * CC_USD
+        assert m.swap_fee_usd("oneswap", CC_USD, hop, "USDCX") == D("13.84") * CC_USD
+        assert m.swap_fee_usd("oneswap", CC_USD, hop) == D("13.84") * CC_USD  # no direction: the higher
+        assert m.path_fee_usd("oneswap", (hop,), CC_USD, "USDCX") == D("13.84") * CC_USD
+        assert m.fee_table_json()["oneswap"]["pairs_cc"] == {"CC>USDCX": 11.56, "USDCX>CC": 13.84}
+    finally:
+        m.PAIR_FEE_CC.clear()

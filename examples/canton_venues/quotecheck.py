@@ -6,8 +6,11 @@ at the same minute. Every hour (canton-venues-quotecheck.timer): Cantex's fees m
   the server's .env; quote calls only, nothing is traded). Its quote also names the network fee of each
   pair, the same at any size and both ways: those fees go to ``<state>/quote_check.json``, which the
   collector reads (``model.PAIR_FEE_CC``). Without the keys Cantex is reported unchecked.
-- OneSwap's quote needs an SDK key we do not have and Pool Party has no quote: unchecked, and said so.
-  Temple and Rocky are order books: the book we walk is the venue's own data.
+- OneSwap quotes with our SDK key (ONESWAP_SDK_KEY; quote calls only). It carves its network fee from
+  the input (the same at any size, different by direction), so its output is our formula on the input
+  less that fee; the fee per pair and direction goes to the collector too.
+- Pool Party publishes no quote: unchecked, and said so. Temple and Rocky are order books: the book we
+  walk is the venue's own data.
 
 Each CC pool holding $20K or more is asked at $100, $1K and $10K, both ways, and priced by our formula
 (``model.FORMULAS``) on reserves read the same minute. A gap over ``GAP_BP`` is asked again once (a
@@ -44,8 +47,9 @@ MIN_POOL_USD = 20_000   # a pool this deep or more is checked (twice its CC side
 GAP_BP = Decimal(1)     # ours and the venue's agree to the last digit when the math is the same
 MAX_POOLS = 12          # per venue, the deepest first
 NO_KEYS = "no Cantex keys on this machine"
-UNCHECKED = {"oneswap": "its quote needs an SDK key we do not have",
-             "poolparty": "it publishes no quote",
+NO_ONESWAP_KEY = "no OneSwap SDK key on this machine"
+ONESWAP = "https://api.oneswap.cc/swapv2"
+UNCHECKED = {"poolparty": "it publishes no quote",
              "temple": "an order book: the book we walk is its own",
              "rocky": "an order book: the book we walk is its own"}
 
@@ -122,8 +126,53 @@ async def _cantex(cc_usd: Decimal) -> tuple[list[dict], dict[str, Decimal]]:
         await pub.close()
 
 
-async def _check(venue: str, read, quote, formula: str, cc_usd: Decimal) -> list[dict]:
-    """Every deep pool at every size both ways; a gap is asked again once on reserves read again."""
+async def _oneswap(cc_usd: Decimal, key: str) -> list[dict]:
+    import httpx
+
+    from cantonvenues.core.models import to_decimal
+    meta: dict[str, tuple[str, bool]] = {}
+    async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": "canton-venues-quotecheck/1"}) as http:
+        async def read():
+            r = await http.get(f"{ONESWAP}/api/rt/pools")
+            r.raise_for_status()
+            out = {}
+            for p in r.json():
+                if not p.get("visible", True) or not p.get("swapsEnabled", True):
+                    continue
+                is_cc = [a.get("id") == "Amulet" and str(a.get("admin", "")).startswith("DSO::")
+                         for a in (p["assetX"], p["assetY"])]
+                if not any(is_cc):
+                    continue
+                acct = p.get("accounting") or {}
+                try:
+                    rx, ry = to_decimal(acct.get("reserveX", p["reserveX"])), to_decimal(acct.get("reserveY", p["reserveY"]))
+                    fee = to_decimal(p["feeBps"]) / 10_000
+                except ArithmeticError:
+                    continue
+                cc_x = is_cc[0]
+                cc_res, tok_res = (rx, ry) if cc_x else (ry, rx)
+                tok = (p["assetY"] if cc_x else p["assetX"])["symbol"]
+                if tok_res <= 0 or cc_res <= 0 or (tok in out and out[tok][0] >= cc_res):
+                    continue
+                meta[tok] = (p["id"], cc_x)
+                out[tok] = (cc_res, tok_res, fee)
+            return {t: v for t, v in out.items() if 2 * v[0] * cc_usd >= MIN_POOL_USD}
+
+        async def quote(tok, sell_cc, amount):
+            pid, cc_x = meta[tok]
+            r = await http.post(f"{ONESWAP}/api/rt/pool/{pid}/quote", headers={"x-sdk-key": key},
+                                json={"amountIn": float(amount), "xToY": sell_cc == cc_x})
+            r.raise_for_status()
+            q = r.json()
+            return to_decimal(q["amountOut"]), to_decimal(q.get("networkFeeIn") or 0)
+        return await _check("oneswap", read, quote, "cp", cc_usd, fee_from_input=True)
+
+
+async def _check(venue: str, read, quote, formula: str, cc_usd: Decimal,
+                 fee_from_input: bool = False) -> list[dict]:
+    """Every deep pool at every size both ways; a gap is asked again once on reserves read again.
+    ``fee_from_input``: the venue takes its network fee out of the input (OneSwap), so our formula is
+    priced on the input less the fee its quote names, and the fee is recorded in CC by direction."""
     pools = await read()
     rows = []
     for tok in sorted(pools, key=lambda t: -pools[t][0])[:MAX_POOLS]:
@@ -133,8 +182,11 @@ async def _check(venue: str, read, quote, formula: str, cc_usd: Decimal) -> list
                 for attempt in range(2):
                     cc_res, tok_res, fee = pools[tok]
                     amount = Decimal(size) / cc_usd * (Decimal(1) if sell_cc else tok_res / cc_res)
-                    ours = m.FORMULAS[formula](cc_res, tok_res, fee)(sell_cc, amount)
                     theirs, net_fee = await quote(tok, sell_cc, amount)
+                    priced = amount - net_fee if fee_from_input and net_fee is not None else amount
+                    ours = m.FORMULAS[formula](cc_res, tok_res, fee)(sell_cc, priced)
+                    if fee_from_input and net_fee is not None:  # the fee in CC, input units at the pool mid
+                        net_fee = net_fee if sell_cc else net_fee * cc_res / tok_res
                     gap = _gap_bp(ours, theirs)
                     row = {"venue": venue, "trade": f"CC->{tok}" if sell_cc else f"{tok}->CC", "size_usd": size,
                            "amount_in": float(amount), "ours": float(ours), "venue_quote": float(theirs),
@@ -151,9 +203,21 @@ async def _check(venue: str, read, quote, formula: str, cc_usd: Decimal) -> list
     return rows
 
 
-def summarise(rows: list[dict], failed: dict[str, str], fees: dict[str, Decimal], now: int) -> dict:
+def oneswap_fees(rows: list[dict]) -> dict[str, Decimal]:
+    """OneSwap's network fee in CC per pair and direction ("CC>USDCX", "USDCX>CC"), the median of its
+    quotes (the same at any size)."""
+    by: dict[str, list[float]] = {}
+    for r in rows:
+        if r["venue"] == "oneswap" and r.get("network_fee_cc") is not None:
+            a, _, b = r["trade"].partition("->")
+            by.setdefault(f"{m.key(a)}>{m.key(b)}", []).append(r["network_fee_cc"])
+    return {k: Decimal(str(round(statistics.median(v), 6))) for k, v in by.items()}
+
+
+def summarise(rows: list[dict], failed: dict[str, str], fees: dict[str, Decimal], now: int,
+              os_fees: dict[str, Decimal] | None = None) -> dict:
     venues = {}
-    for v in ("tradecraft", "cantex"):
+    for v in ("tradecraft", "cantex", "oneswap"):
         vr = [r for r in rows if r["venue"] == v]
         if v in failed:
             venues[v] = {"status": "not checked", "why": failed[v]}
@@ -164,6 +228,8 @@ def summarise(rows: list[dict], failed: dict[str, str], fees: dict[str, Decimal]
                          "median_gap_bp": round(statistics.median(gaps), 4) if gaps else None}
     if fees:
         venues.setdefault("cantex", {})["network_fee_cc"] = {f"CC/{t}": float(f) for t, f in sorted(fees.items())}
+    if os_fees:
+        venues.setdefault("oneswap", {})["network_fee_cc"] = {k: float(f) for k, f in sorted(os_fees.items())}
     for v, why in UNCHECKED.items():
         venues[v] = {"status": "not checked", "why": why}
     return {"t": now, "gap_bp_limit": float(GAP_BP), "sizes_usd": list(SIZES_USD), "min_pool_usd": MIN_POOL_USD,
@@ -180,7 +246,7 @@ def message(record: dict) -> str | None:
             lines.append(f"{v}: {len(bad)} of {s['checked']} trades off the venue's own quote, largest "
                          f"{s['max_gap_bp']:.1f} bp (" + html.escape(", ".join(f"{r['trade']} ${r['size_usd']:,}"
                                                                              for r in bad[:4])) + ")")
-        elif s.get("status") == "not checked" and s.get("why") != NO_KEYS:  # no keys: by setup, not news
+        elif s.get("status") == "not checked" and s.get("why") not in (NO_KEYS, NO_ONESWAP_KEY):  # by setup
             lines.append(f"{v}: not checked ({html.escape(s.get('why', ''))})")
     if not lines:
         return None
@@ -202,8 +268,18 @@ async def run(api: Path, state: Path, dry: bool) -> dict:
             failed["cantex"] = f"{type(exc).__name__}: {exc}"[:200]
     else:
         failed["cantex"] = NO_KEYS
+    os_fees: dict[str, Decimal] = {}
+    if key := os.getenv("ONESWAP_SDK_KEY"):
+        try:
+            got = await _oneswap(cc_usd, key)
+            rows += got
+            os_fees = oneswap_fees(got)
+        except Exception as exc:  # noqa: BLE001
+            failed["oneswap"] = f"{type(exc).__name__}: {exc}"[:200]
+    else:
+        failed["oneswap"] = NO_ONESWAP_KEY
     now = int(time.time())
-    record = summarise(rows, failed, fees, now)
+    record = summarise(rows, failed, fees, now, os_fees)
     for v, s in record["venues"].items():
         log.info("%-10s %s", v, json.dumps({k: x for k, x in s.items() if k != "network_fee_cc"}))
     if fees:
@@ -212,8 +288,9 @@ async def run(api: Path, state: Path, dry: bool) -> dict:
         return record
     from collect import write_json
     write_json(api / "quotecheck.json", record)
-    if fees:
-        write_json(state / "quote_check.json", {"t": now, "cantex_fee_cc": {t: str(f) for t, f in fees.items()}})
+    if fees or os_fees:
+        write_json(state / "quote_check.json", {"t": now, "cantex_fee_cc": {t: str(f) for t, f in fees.items()},
+                                                "oneswap_fee_cc": {k: str(f) for k, f in os_fees.items()}})
     if (text := message(record)) is not None:
         send(text)
     return record

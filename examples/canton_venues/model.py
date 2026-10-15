@@ -206,8 +206,9 @@ def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> lis
             # what one unit received is worth: the token on a sell (``mid`` per CC), CC on a buy
             out_usd = cc_in_usd / mid if side == "sell" else cc_in_usd
             picks = {v: _pick(p, side == "sell", amount,
-                              lambda path, v=v: path_fee_usd(v, path, cc_in_usd) / out_usd)
+                              lambda path, start=None, v=v: path_fee_usd(v, path, cc_in_usd, start) / out_usd)
                      for v, p in pools.items()}
+            starts = {v: _start(p, side == "sell") for v, p in pools.items()}
             outs = {v: o for v, (o, _) in picks.items()}
             filled = {v: o for v, o in outs.items() if o > 0}  # a book that runs out returns 0
             best = max(filled, key=filled.get)
@@ -224,9 +225,17 @@ def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> lis
                 "swaps": swaps,
                 "via": {v: via(picks[v][1]) for v in filled if swaps[v] == 2},
                 **_route_usd(picks, filled),
-                **net_of_fees(filled, {v: path_fee_usd(v, picks[v][1], cc_in_usd) for v in filled}, out_usd),
+                **net_of_fees(filled, {v: path_fee_usd(v, picks[v][1], cc_in_usd, starts[v]) for v in filled},
+                              out_usd),
             })
     return rows
+
+
+def _start(p, sell_cc: bool) -> str:
+    """The token a venue's trade starts from: CC on a sell of CC, the token on a buy."""
+    if isinstance(p, Route):
+        return p.frm if sell_cc else p.to
+    return CC if sell_cc else key(p.token)
 
 
 def _route_usd(picks: dict, filled: dict) -> dict:
@@ -299,8 +308,9 @@ def scan(books: dict[str, dict[str, VenuePool]], cc_in_usd: Decimal) -> list[dic
                 if buy == sell:
                     continue
                 x, g = best_round_trip(pools[buy], pools[sell], cc_in_usd)
-                cost_cc = (swap_cost_cc(buy, cc_in_usd, pool_hop(pools[buy]))
-                           + swap_cost_cc(sell, cc_in_usd, pool_hop(pools[sell])))
+                # bought with CC on one venue, sold for CC on the other
+                cost_cc = (swap_cost_cc(buy, cc_in_usd, pool_hop(pools[buy]), CC)
+                           + swap_cost_cc(sell, cc_in_usd, pool_hop(pools[sell]), token))
                 net_cc = g - cost_cc
                 found.append({
                     "token": token,
@@ -328,14 +338,17 @@ SWAP_COST_CC = Decimal("1.5")
 # "assumed". Only a measured or documented fee can carry a best-price claim; an assumed one fills the
 # net figures and is shown as an assumption. Replace an entry when it is measured from our own trades.
 NETWORK_FEE: dict[str, tuple[str, Decimal, Decimal, Decimal, str]] = {
-    # Cantex's own quotes on all 24 CC pairs, 2026-10-15, three reads from 11:20 to 12:44 UTC: 0.88 CC
-    # (HANDL, HECTO, MOD, TRKX*) to 3.49 CC (CC/USDCx), the same at any size and both ways, moving 25%
-    # within an hour (CC/USDCx 3.42, 3.49, 3.13; 0.86 flat, measured 03.10, is out of date). Each pair's
-    # own fee comes from quotecheck.py every hour (``PAIR_FEE_CC``); this is the stand-in when that
-    # record is stale, with headroom around what was seen. A best-price claim must survive the range.
-    "cantex": ("cc", Decimal("1.36"), Decimal("0.85"), Decimal("3.60"), "measured"),
-    # docs.oneswap.cc: "typically around $1.5-2 at recent network prices"
-    "oneswap": ("usd", Decimal("1.75"), Decimal("1.5"), Decimal("2.0"), "documented"),
+    # Cantex's own quotes on all 24 CC pairs, 2026-10-15, five reads from 11:20 to 13:30 UTC: 0.75 CC
+    # (HANDL, HECTO, MOD, TRKX*) to 3.49 CC (CC/USDCx), the same at any size and both ways, moving a
+    # third within two hours (CC/USDCx 3.42, 3.49, 3.13, 2.34; 0.86 flat, measured 03.10, is out of
+    # date). Each pair's own fee comes from quotecheck.py every hour (``PAIR_FEE_CC``); this is the
+    # stand-in when that record is stale, with headroom around what was seen. A best-price claim must
+    # survive the range.
+    "cantex": ("cc", Decimal("1.10"), Decimal("0.70"), Decimal("3.60"), "measured"),
+    # OneSwap's own quotes (our SDK key), 2026-10-15: carved from the input, the same at any size, $1.10
+    # to $1.24 selling CC and $1.33 to $1.48 selling the token, on its four pools of $20K+ (its docs said
+    # "typically around $1.5-2"). Each pair and direction's own fee comes from quotecheck.py hourly.
+    "oneswap": ("usd", Decimal("1.30"), Decimal("1.00"), Decimal("2.00"), "measured"),
     # docs.tradecraft.fi/fees-and-pricing "Gas: $0.10" (illustrative); high end: its DAR guide sizes an
     # immediate swap at ~23 kB, $1.38 at MainNet's 60 USD/MB with no free burst left. Checked 2026-10-08.
     "tradecraft": ("usd", Decimal("0.10"), Decimal("0.10"), Decimal("1.40"), "documented"),
@@ -365,36 +378,57 @@ def fee_known(venue: str) -> bool:
 def fee_table_json() -> dict:
     out = {v: {"unit": u, "point": float(pt), "low": float(lo), "high": float(hi), "basis": b}
            for v, (u, pt, lo, hi, b) in NETWORK_FEE.items()}
-    for (v, pair), fee in sorted(PAIR_FEE_CC.items(), key=lambda x: (x[0][0], sorted(x[0][1]))):
-        a, b = sorted(pair, key=lambda k: (k != CC, k))  # CC first
-        out.setdefault(v, {}).setdefault("pairs_cc", {})[f"{a}/{b}"] = float(fee)
+    for k, fee in sorted(PAIR_FEE_CC.items(), key=lambda x: (x[0][0], str(x[0][1:]))):
+        if len(k) == 2:  # the same both ways: "CC/USDCX"
+            a, b = sorted(k[1], key=lambda t: (t != CC, t))  # CC first
+            name = f"{a}/{b}"
+        else:  # by direction: "CC>USDCX" is CC sold for USDCx
+            name = f"{k[1]}>{k[2]}"
+        out.setdefault(k[0], {}).setdefault("pairs_cc", {})[name] = float(fee)
     return out
 
 
-def swap_cost_cc(venue: str, cc_in_usd: Decimal, hop=None) -> Decimal:
+def swap_cost_cc(venue: str, cc_in_usd: Decimal, hop=None, frm: str | None = None) -> Decimal:
     """Network cost of one swap on ``venue``, in CC (its best estimate; ``hop``'s pair's own where the
-    venue's quotes give one, ``PAIR_FEE_CC``)."""
-    return swap_fee_usd(venue, cc_in_usd, hop) / cc_in_usd
+    venue's quotes give one, ``PAIR_FEE_CC``, sold from ``frm`` where that matters)."""
+    return swap_fee_usd(venue, cc_in_usd, hop, frm) / cc_in_usd
 
 
 # The network fee of one swap on one pair, in CC, as the venue's own quotes give it (quotecheck.py):
 # Cantex names it per pair, the same at any size and both ways (2026-10-15: CC/USDCx 3.42 CC, CC/USDC.B
 # 1.32, CC/CBTC 1.28, CC/HECTO 1.12; the flat 0.86 measured 03.10 understated CC/USDCx 4x). The
 # collector fills it from the check's record while that is fresh; a pair without one takes the venue's
-# point in ``NETWORK_FEE``. Keyed (venue, frozenset of the two token keys).
-PAIR_FEE_CC: dict[tuple[str, frozenset], Decimal] = {}
+# point in ``NETWORK_FEE``. Keyed (venue, frozenset of the two token keys) where the fee is the same
+# both ways (Cantex), (venue, from key, to key) where it is not: OneSwap carves its fee from the input,
+# so it differs by what is sold (15.10: CC to USDCx 11.59 CC, $1.24; USDCx to CC $1.48), the same at
+# any size.
+PAIR_FEE_CC: dict[tuple, Decimal] = {}
 
 
-def swap_fee_usd(venue: str, cc_in_usd: Decimal, hop=None) -> Decimal:
-    """One swap's network fee on ``venue`` in dollars: its pair's measured fee, else the venue's point."""
-    if hop is not None and (fee := PAIR_FEE_CC.get((venue, frozenset((hop.a, hop.b))))) is not None:
-        return fee * cc_in_usd
+def swap_fee_usd(venue: str, cc_in_usd: Decimal, hop=None, frm: str | None = None) -> Decimal:
+    """One swap's network fee on ``venue`` in dollars: its pair's measured fee (selling ``frm`` where
+    the venue's fee depends on the direction; the higher of the two when the direction is not given),
+    else the venue's point."""
+    if hop is not None:
+        if frm is not None and (fee := PAIR_FEE_CC.get((venue, frm, hop.to(frm)))) is not None:
+            return fee * cc_in_usd
+        if (fee := PAIR_FEE_CC.get((venue, frozenset((hop.a, hop.b))))) is not None:
+            return fee * cc_in_usd
+        both = [f for f in (PAIR_FEE_CC.get((venue, hop.a, hop.b)), PAIR_FEE_CC.get((venue, hop.b, hop.a)))
+                if f is not None]
+        if both:
+            return max(both) * cc_in_usd
     return network_fee_usd(venue, cc_in_usd)
 
 
-def path_fee_usd(venue: str, path: tuple, cc_in_usd: Decimal) -> Decimal:
-    """A path's network fees in dollars, each swap its pair's (a hop of None: the venue's point)."""
-    return sum((swap_fee_usd(venue, cc_in_usd, h) for h in path), Decimal(0))
+def path_fee_usd(venue: str, path: tuple, cc_in_usd: Decimal, start: str | None = None) -> Decimal:
+    """A path's network fees in dollars, each swap its pair's, walked from ``start`` when given (a hop
+    of None: the venue's point)."""
+    total, frm = Decimal(0), start
+    for h in path:
+        total += swap_fee_usd(venue, cc_in_usd, h, frm)
+        frm = h.to(frm) if (frm is not None and h is not None) else None
+    return total
 # Rocky publishes no fee schedule; its homepage example charges 0.025% per order and says the app
 # is the source of truth. An assumption until the app or their docs say otherwise.
 BOOK_TAKER_FEE = {"rocky": Decimal("0.00025"),
@@ -619,8 +653,8 @@ class Route:
         filled = [(o, p) for o, p in self.quotes(forward, amount) if o > 0]
         if not filled:
             return Decimal(0), ()
-        cost = _cost(fee_per_swap)
-        return max(filled, key=lambda q: q[0] - cost(q[1]))
+        cost, start = _cost(fee_per_swap), (self.frm if forward else self.to)
+        return max(filled, key=lambda q: q[0] - cost(q[1], start))
 
     def out(self, forward: bool, amount: Decimal) -> Decimal:
         return self.best(forward, amount)[0]
@@ -630,9 +664,10 @@ class Route:
         return next((h for h in self.paths[0] if self.to in (h.a, h.b) and h.market), None)
 
 
-def _cost(fee) -> Callable[[tuple], Decimal]:
-    """A path's network cost: ``fee`` a swap, or ``fee`` itself when it is a function of the path."""
-    return fee if callable(fee) else (lambda path: len(path) * fee)
+def _cost(fee) -> Callable[..., Decimal]:
+    """A path's network cost, as cost(path, start): ``fee`` a swap, or ``fee`` itself when it is a
+    function of the path and the token it starts from."""
+    return fee if callable(fee) else (lambda path, start=None: len(path) * fee)
 
 
 def _pick(p, forward: bool, amount: Decimal, fee_per_swap) -> tuple[Decimal, tuple]:
@@ -667,6 +702,14 @@ class DollarRoutes:
                 out[v] = hop
         return out
 
+    def start(self, venue: str, path: tuple, buying: bool) -> str | None:
+        """The token a picked path starts from: its dollar token on a buy, the token on a sell."""
+        if not path or path[0] is None:
+            return None
+        if not buying:
+            return next((r.to for r in self.routes.get(venue, [])), None)
+        return next((t for t in (path[0].a, path[0].b) if t in self.dollar), None)
+
     def min_swaps(self, venue: str) -> int:
         """The fewest swaps any of its routes takes."""
         return min(len(p) for r in self.routes[venue] for p in r.paths)
@@ -675,27 +718,27 @@ class DollarRoutes:
             dollar: str | None = None) -> tuple[Decimal, tuple]:
         """(token received for ``usd`` dollars, path) on its best route after ``fee_per_swap`` tokens;
         ``dollar`` keeps to routes paid in that dollar token."""
-        best, cost = (Decimal(0), ()), _cost(fee_per_swap)
+        best, best_net, cost = (Decimal(0), ()), Decimal(0), _cost(fee_per_swap)
         for r in self.routes.get(venue, []):
             if dollar is not None and r.frm != dollar:
                 continue
             got = r.best(True, usd / self.dollar[r.frm], cost)
-            if got[0] - cost(got[1]) > best[0] - cost(best[1]):
-                best = got
+            if got[1] and (net := got[0] - cost(got[1], r.frm)) > best_net:
+                best, best_net = got, net
         return best
 
     def sell(self, venue: str, qty: Decimal, fee_per_swap: Decimal = Decimal(0),
              dollar: str | None = None) -> tuple[Decimal, tuple]:
         """(dollars received for ``qty`` of the token, path) after ``fee_per_swap`` dollars a swap;
         ``dollar`` keeps to routes that pay out in that dollar token."""
-        best, cost = (Decimal(0), ()), _cost(fee_per_swap)
+        best, best_net, cost = (Decimal(0), ()), Decimal(0), _cost(fee_per_swap)
         for r in self.routes.get(venue, []):
             if dollar is not None and r.frm != dollar:
                 continue
-            o, p = r.best(False, qty, lambda path, d=self.dollar[r.frm]: cost(path) / d)
+            o, p = r.best(False, qty, lambda path, start=None, d=self.dollar[r.frm]: cost(path, start) / d)
             o *= self.dollar[r.frm]
-            if o - cost(p) > best[0] - cost(best[1]):
-                best = (o, p)
+            if p and (net := o - cost(p, r.to)) > best_net:
+                best, best_net = (o, p), net
         return best
 
 
@@ -714,8 +757,9 @@ def usd_ladder(routes: DollarRoutes, price_usd: Decimal, cc_in_usd: Decimal) -> 
             usd = Decimal(size)
             qty = usd / price_usd
             unit = price_usd if side == "buy" else Decimal(1)  # dollars per unit received
-            picks = {v: (routes.buy(v, usd, lambda path, v=v: path_fee_usd(v, path, cc_in_usd) / unit)
-                         if side == "buy" else routes.sell(v, qty, lambda path, v=v: path_fee_usd(v, path, cc_in_usd)))
+            picks = {v: (routes.buy(v, usd, lambda path, start=None, v=v: path_fee_usd(v, path, cc_in_usd, start) / unit)
+                         if side == "buy" else
+                         routes.sell(v, qty, lambda path, start=None, v=v: path_fee_usd(v, path, cc_in_usd, start)))
                      for v in routes.venues}
             filled = {v: o for v, (o, p) in picks.items() if o > 0}
             if not filled:
@@ -732,7 +776,8 @@ def usd_ladder(routes: DollarRoutes, price_usd: Decimal, cc_in_usd: Decimal) -> 
                 "best": best,
                 "edge_bps": runner_up_bps(filled),
                 "swaps": swaps, "via": through,
-                **net_of_fees(filled, {v: path_fee_usd(v, picks[v][1], cc_in_usd) for v in filled}, unit),
+                **net_of_fees(filled, {v: path_fee_usd(v, picks[v][1], cc_in_usd,
+                                                       routes.start(v, picks[v][1], side == "buy")) for v in filled}, unit),
             })
     return rows
 
@@ -783,9 +828,9 @@ def usd_scan(token: str, routes: DollarRoutes, cc_in_usd: Decimal) -> list[dict]
                 qty, p_buy = routes.buy(buy, x, dollar=d)
                 p_sell = routes.sell(sell, qty, dollar=d)[1] if qty > 0 else ()
                 # a side that cannot fill at that size still costs its shortest route (the trip never clears)
-                cost_cc = ((path_fee_usd(buy, p_buy, cc_in_usd) / cc_in_usd if p_buy
+                cost_cc = ((path_fee_usd(buy, p_buy, cc_in_usd, d) / cc_in_usd if p_buy
                             else routes.min_swaps(buy) * swap_cost_cc(buy, cc_in_usd))
-                           + (path_fee_usd(sell, p_sell, cc_in_usd) / cc_in_usd if p_sell
+                           + (path_fee_usd(sell, p_sell, cc_in_usd, token) / cc_in_usd if p_sell
                               else routes.min_swaps(sell) * swap_cost_cc(sell, cc_in_usd)))
                 trips.append((g - cost_cc * cc_in_usd, d, x, g, cost_cc, p_buy, p_sell))
             if not trips:
@@ -815,7 +860,8 @@ def route_order(pools: dict[str, VenuePool], side: str, size_usd: int,
     gross = {v: p.out(side == "sell", amount) for v, p in pools.items()}
     # each venue after its own network fee, so the pick and the gap are what a trader keeps
     out_usd = cc_in_usd / mid if side == "sell" else cc_in_usd
-    outs = {v: o - swap_fee_usd(v, cc_in_usd, pool_hop(pools[v])) / out_usd for v, o in gross.items()}
+    outs = {v: o - swap_fee_usd(v, cc_in_usd, (h := pool_hop(pools[v])), CC if side == "sell" else h.b) / out_usd
+            for v, o in gross.items()}
     # against the runner-up, not the worst: with four venues the worst is a straw man
     best, worst = sorted(outs, key=outs.get, reverse=True)[:2]
     extra = outs[best] - outs[worst]

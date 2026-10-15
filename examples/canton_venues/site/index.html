@@ -959,7 +959,7 @@ function renderExecution() {
 // what our pool math was last checked against: the venues' own quote engines (quotecheck.py)
 function checkNote() {
   const q = D.quotecheck; if (!q || !q.venues) return "";
-  const ok = ["tradecraft", "cantex"].map((v) => [v, q.venues[v]]).filter(([, s]) => s && s.checked);
+  const ok = ["tradecraft", "cantex", "oneswap"].map((v) => [v, q.venues[v]]).filter(([, s]) => s && s.checked);
   if (!ok.length) return "";
   const age = (Date.now() / 1000 - q.t) / 3600;
   if (age > 3) return "";  // hourly check: older than three hours is not a check any more

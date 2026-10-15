@@ -68,8 +68,12 @@ def _pair_fees() -> None:
     m.PAIR_FEE_CC.clear()
     for v, row in ((load("execution") or {}).get("network_fee") or {}).items():
         for pair, fee in (row.get("pairs_cc") or {}).items():
-            a, _, b = pair.partition("/")
-            m.PAIR_FEE_CC[(v, frozenset((a, b)))] = Decimal(str(fee))
+            if ">" in pair:  # by direction: CC>USDCX is CC sold for USDCx
+                a, _, b = pair.partition(">")
+                m.PAIR_FEE_CC[(v, a, b)] = Decimal(str(fee))
+            else:
+                a, _, b = pair.partition("/")
+                m.PAIR_FEE_CC[(v, frozenset((a, b)))] = Decimal(str(fee))
 
 
 def _token_row(key: str) -> dict | None:
@@ -207,8 +211,8 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
         paths = m.venue_paths(hops, s, b, m.MIN_MARKET_USD)
         if not paths:
             continue
-        def fee(path, v=v):  # each swap's network fee in output units (Cantex: its pair's own)
-            return m.path_fee_usd(v, path, cc_usd) / out_usd if out_usd else Decimal(0)
+        def fee(path, start=None, v=v):  # each swap's network fee in output units (its pair's own)
+            return m.path_fee_usd(v, path, cc_usd, start) / out_usd if out_usd else Decimal(0)
         got, path = m.Route(v, names.get(b, b), s, b, tuple(paths)).best(True, Decimal(str(amount)), fee)
         if got <= 0:
             by_venue[v] = {"amount_out": None, "note": "too thin for this size"}
@@ -217,7 +221,7 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
         by_venue[v] = {"amount_out": _r(got, 10), "swaps": len(path),
                        **({"via": names.get(via, via)} if via else {}),
                        "markets": [h.market or f"{names.get(h.a, h.a)}/{names.get(h.b, h.b)} pool" for h in path],
-                       "after_network_fee": _r(got - fee(path), 10) if out_usd else None}
+                       "after_network_fee": _r(got - fee(path, s), 10) if out_usd else None}
     if not by_venue:
         raise ToolError(f"no venue trades {sell!r} for {buy!r} in one or two swaps; call list_tokens() for symbols")
     filled = {v: q for v, q in by_venue.items() if q["amount_out"]}
