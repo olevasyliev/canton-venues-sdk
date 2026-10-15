@@ -826,8 +826,10 @@ def change(series: list[tuple[int, float]], now_ms: int, window_ms: int,
         return None
     past = [v for _, v in before]
     # the median of the last three points before the window, so one wick in a thin pool (a
-    # single trade that moved the price for an hour) is not taken as the starting price
-    base = sorted(past[-3:])[len(past[-3:]) // 2]
+    # single trade that moved the price for an hour) is not taken as the starting price; with fewer
+    # than three, the one nearest the window's start (with two, the "median" was the higher one: a
+    # wick of 100x read as -99%)
+    base = sorted(past[-3:])[1] if len(past) >= 3 else past[-1]
     if base <= 0:
         return None
     return series[-1][1] / base - 1

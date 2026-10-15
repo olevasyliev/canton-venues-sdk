@@ -89,8 +89,12 @@ def test_a_venue_left_out_for_over_30_min_is_told_once_then_when_it_is_back():
     assert wd.check(s, state, NOW + timedelta(minutes=10)) == (None, state)
 
     later = NOW + timedelta(minutes=30)
+    # clear once is not back yet (2026-10-15: a flapping venue paged three times in 20 min)
+    quiet, state = wd.check({"t": later.timestamp() - 120, "down_since": {}}, state, later)
+    assert quiet is None and state["clear_seen"] == later.timestamp()
+    later += timedelta(minutes=10)
     back, _ = wd.check({"t": later.timestamp() - 120, "down_since": {}}, state, later)
-    assert "has every venue again" in back and "Cantex answering again, out for 75 min" in back
+    assert "has every venue again" in back and "Cantex answering again, out for 85 min" in back
 
 
 def test_a_new_trouble_is_told_at_once_not_held_for_the_reminder():

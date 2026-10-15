@@ -28,7 +28,7 @@ from decimal import Decimal
 
 import httpx
 
-from ..core.models import Instrument
+from ..core.models import Instrument, to_decimal
 from ..core.venue import VenueRequestError
 from .reserves import ReservePool
 
@@ -102,8 +102,8 @@ class OneSwapPublicData:
             symbol_b=y["symbol"],
             token_a=Instrument(admin=x["admin"], id=x["id"]),
             token_b=Instrument(admin=y["admin"], id=y["id"]),
-            reserve_a=Decimal(str(acct.get("reserveX", p["reserveX"]))),
-            reserve_b=Decimal(str(acct.get("reserveY", p["reserveY"]))),
+            reserve_a=to_decimal(acct.get("reserveX", p["reserveX"])),
+            reserve_b=to_decimal(acct.get("reserveY", p["reserveY"])),
             fee=Decimal(p["feeBps"]) / 10_000,
             fee_source=DOCS_FEE,
         )

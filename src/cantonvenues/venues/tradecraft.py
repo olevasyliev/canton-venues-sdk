@@ -57,7 +57,7 @@ from urllib.parse import quote as urlquote
 
 import httpx
 
-from ..core.models import Instrument, Pool, Quote
+from ..core.models import Instrument, Pool, Quote, to_decimal
 from ..core.venue import PoolDataAdapter, VenueRequestError
 
 log = logging.getLogger("cantonvenues")
@@ -74,7 +74,7 @@ _TWO = Decimal(2)
 
 
 def _dec(value: object) -> Decimal:
-    return value if isinstance(value, Decimal) else Decimal(str(value))
+    return to_decimal(value)
 
 
 def swap_output(

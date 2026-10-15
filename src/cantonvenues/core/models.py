@@ -14,8 +14,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import Enum
+
+
+def to_decimal(value: object, default: Decimal | None = None) -> Decimal:
+    """A venue's number (string or number) as a ``Decimal``: ``default`` for a missing one (None or "")
+    when given. NaN, an infinity or text raise ``InvalidOperation`` (an ``ArithmeticError``), so the one
+    row is skipped where an adapter skips bad rows: a "NaN" parses as a Decimal without raising and then
+    stopped every collector tick at its first comparison or JSON write (re-audit, 2026-10-15)."""
+    if value is None or value == "":
+        if default is None:
+            raise InvalidOperation(f"missing number: {value!r}")
+        return default
+    d = value if isinstance(value, Decimal) else Decimal(str(value))
+    if not d.is_finite():
+        raise InvalidOperation(f"not a finite number: {value!r}")
+    return d
 
 
 @dataclass(frozen=True)
@@ -119,6 +134,18 @@ def live_levels(levels) -> tuple[BookLevel, ...]:
     """The levels a trade can fill: a price or size of 0 (a null or "" a venue sent, read as 0) is no
     level. Walking a 0-price ask divides by zero (Rocky's CBTC-USDCX, replayed 2026-10-14)."""
     return tuple(lv for lv in levels if lv.price > 0 and lv.size > 0)
+
+
+def book_levels(rows) -> tuple[BookLevel, ...]:
+    """One side of a book from (price, size) pairs as a venue sent them: a level that will not parse
+    (NaN, text) is left out, as a 0 one is (``live_levels``), not the whole book."""
+    out = []
+    for price, size in rows:
+        try:
+            out.append(BookLevel(price=to_decimal(price, Decimal(0)), size=to_decimal(size, Decimal(0))))
+        except (ArithmeticError, TypeError, ValueError):
+            continue
+    return live_levels(out)
 
 
 @dataclass(frozen=True)

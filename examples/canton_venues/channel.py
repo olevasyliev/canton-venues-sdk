@@ -14,6 +14,7 @@ template. No DefiLlama figure appears in any post.
 
 from __future__ import annotations
 
+import html
 import json
 import statistics
 from collections import Counter, defaultdict
@@ -218,13 +219,14 @@ def pegs_post(history: dict, tokens: list[dict], symbols: dict[str, str], now: i
         return None
     lines = [f"💵 <b>Stablecoins on Canton</b>, {span}"]
     for inside, name, worst, worst_t in sorted(stable, key=lambda x: (-x[0], x[1])):
-        line = f"{name}: within 0.5% of $1 {inside * 100:.0f}% of the time"
+        line = f"{html.escape(name)}: within 0.5% of $1 {inside * 100:.0f}% of the time"  # Telegram HTML
         if abs(worst) > PEG_BAND:
             line += f", furthest {signed(worst, 2)} held 30 min ({_day(worst_t)})"
         lines.append(line)
     if ref:
         lines += ["", "🌍 <b>Against outside prices</b>, median"]
-        lines += [f"{name} {signed(p, 2)} vs {label}" for name, label, p in sorted(ref, key=lambda x: -abs(x[2]))]
+        lines += [f"{html.escape(name)} {signed(p, 2)} vs {html.escape(label)}"
+                  for name, label, p in sorted(ref, key=lambda x: -abs(x[2]))]
     lines += ["", "Read every five minutes from Canton pools and order books.",
               f'🔗 <a href="{SITE}/#premium">Live premiums</a>']
     return Post("pegs", "\n".join(lines))

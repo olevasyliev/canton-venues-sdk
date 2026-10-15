@@ -39,7 +39,8 @@ from decimal import Decimal
 import httpx
 
 from ..core.models import (
-    live_levels,
+    book_levels,
+    to_decimal,
     BookLevel,
     FundingRate,
     Market,
@@ -63,7 +64,7 @@ VALID_DEPTHS = (10, 50, 200)
 
 
 def _dec(value: object) -> Decimal:
-    return Decimal(str(value))
+    return to_decimal(value)
 
 
 def _ts(millis: object) -> datetime:
@@ -213,8 +214,8 @@ class EkidenAdapter(MarketDataAdapter):
         return OrderBook(
             symbol=book["s"],
             timestamp=_ts(book["ts"]),
-            bids=live_levels(BookLevel(price=_dec(p), size=_dec(s)) for p, s in book.get("b", [])),
-            asks=live_levels(BookLevel(price=_dec(p), size=_dec(s)) for p, s in book.get("a", [])),
+            bids=book_levels(book.get("b", [])),
+            asks=book_levels(book.get("a", [])),
         )
 
     async def recent_trades(self, symbol: str, limit: int = 50) -> list[Trade]:

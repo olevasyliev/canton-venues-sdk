@@ -54,8 +54,8 @@ from decimal import Decimal
 
 import httpx
 
-from ..core.models import Balance, BookLevel, FundingRate, Instrument, Market, Order, OrderBook, Side, Ticker, Trade, live_levels
-from ..core.venue import OrderTradingAdapter, TradingDisabledError, VenueAuthError, VenueRequestError
+from ..core.models import Balance, FundingRate, Instrument, Market, Order, OrderBook, Side, Ticker, Trade, book_levels, to_decimal
+from ..core.venue import OrderTradingAdapter, TradingDisabledError, VenueAuthError, VenueError, VenueRequestError
 
 MAINNET_BASE_URL = "https://api.templedigitalgroup.com"
 TESTNET_BASE_URL = "https://api-testnet.templedigitalgroup.com"
@@ -64,7 +64,7 @@ TAKER_FEE = Decimal("0.0001")  # 1 bp, Temple help center, "Fees & Rebates"
 
 
 def _dec(value: object) -> Decimal:
-    return Decimal(str(value)) if value not in (None, "") else Decimal(0)
+    return to_decimal(value, Decimal(0))
 
 
 def _ts(value: object) -> datetime:
@@ -154,9 +154,16 @@ class TempleAdapter(OrderTradingAdapter):
     # === MarketDataAdapter ===============================================
 
     async def connect(self) -> None:
+        """Open the client and check Temple answers: its keyless settled volume, or, with a key, its
+        keyed ticker when the keyless route fails (its books then still read; 2026-10-15 replay)."""
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=30.0)
-        await self.settled_volume(1)
+        try:
+            await self.settled_volume(1)
+        except VenueError:
+            if not self._key:
+                raise
+            await self._get("/api/v1/market/ticker")
 
     async def close(self) -> None:
         if self._client is not None:
@@ -207,8 +214,8 @@ class TempleAdapter(OrderTradingAdapter):
         return OrderBook(
             symbol=book.get("symbol", symbol),
             timestamp=_ts(book["timestamp"]) if book.get("timestamp") else datetime.now(UTC),
-            bids=live_levels(BookLevel(price=_dec(lv["price"]), size=_dec(lv["quantity"])) for lv in book["bids"]),
-            asks=live_levels(BookLevel(price=_dec(lv["price"]), size=_dec(lv["quantity"])) for lv in book["asks"]),
+            bids=book_levels((lv.get("price"), lv.get("quantity")) for lv in book["bids"] if isinstance(lv, dict)),
+            asks=book_levels((lv.get("price"), lv.get("quantity")) for lv in book["asks"] if isinstance(lv, dict)),
         )
 
     async def recent_trades(self, symbol: str, limit: int = 50) -> list[Trade]:

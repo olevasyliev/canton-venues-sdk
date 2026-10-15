@@ -265,9 +265,13 @@ def test_rocky_perps_rows_only_after_the_whole_read(tmp_path, monkeypatch):
     assert not any(p["venue"] == "rocky_perp" for p in t["perps"]["markets"])
 
 
-def test_json_with_nan_fails_loudly(tmp_path):
-    with pytest.raises(ValueError):
-        collect.write_json(tmp_path / "x.json", {"a": math.nan})
+def test_json_with_nan_is_written_as_null_not_a_failed_tick(tmp_path, caplog):
+    # 2026-10-15: failing the write made one "NaN" in any venue's field stop every tick; the file stays
+    # valid JSON (no NaN token a page cannot parse) and the warning says what happened
+    collect.write_json(tmp_path / "x.json", {"a": math.nan, "b": [1.5, math.inf], "c": "ok"})
+    import json
+    assert json.loads((tmp_path / "x.json").read_text()) == {"a": None, "b": [1.5, None], "c": "ok"}
+    assert "2 non-finite" in caplog.text
 
 
 def test_alert_symbols_are_escaped_for_telegram():

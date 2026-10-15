@@ -33,7 +33,7 @@ from decimal import Decimal
 
 import httpx
 
-from ..core.models import Instrument, Pool, Quote
+from ..core.models import Instrument, Pool, Quote, to_decimal
 from ..core.venue import PoolDataAdapter, VenueRequestError
 
 MAINNET_HOST = "https://api.cantex.io"
@@ -49,6 +49,16 @@ def swap_output(reserve_in: Decimal, reserve_out: Decimal, amount: Decimal, fee:
     """Constant product, fee charged on the input — Cantex's own pricing."""
     net_in = amount * (Decimal(1) - fee)
     return reserve_out * net_in / (reserve_in + net_in)
+
+
+def _finite_bar(b: dict) -> bool:
+    """A candle whose prices and volume are all finite numbers; any other is left out of the series."""
+    try:
+        for k in ("open", "high", "low", "close", "volume"):
+            to_decimal(b[k])
+        return True
+    except (KeyError, TypeError, ArithmeticError):
+        return False
 
 
 def _inst(raw: dict) -> Instrument:
@@ -146,11 +156,11 @@ class CantexPublicData(PoolDataAdapter):
                     token_b=_inst(p["token_b_instrument"]),
                     symbol_a=p["token_a_instrument"]["symbol"],
                     symbol_b=p["token_b_instrument"]["symbol"],
-                    reserve_a=Decimal(p["reserve_a"]),
-                    reserve_b=Decimal(p["reserve_b"]),
-                    fee=Decimal(p["fee_rate"]),
-                    price=Decimal(p["price"] or 0),
-                    tvl_cc=Decimal(p["tvl_cc"] or 0),
+                    reserve_a=to_decimal(p["reserve_a"]),
+                    reserve_b=to_decimal(p["reserve_b"]),
+                    fee=to_decimal(p["fee_rate"]),
+                    price=to_decimal(p["price"] or 0),
+                    tvl_cc=to_decimal(p["tvl_cc"] or 0),
                 ))
             except (KeyError, TypeError, ArithmeticError) as exc:
                 log.warning("cantex: pool %s left out: %r", p.get("symbol"), exc)
@@ -250,9 +260,9 @@ class CantexPublicData(PoolDataAdapter):
                     channel = data.get("channel")
                     if channel in wanted and channel not in found and "bars" in data.get("data", {}):
                         found[channel] = [
-                            Candle(int(b["start_ts"]), Decimal(b["open"]), Decimal(b["high"]),
-                                   Decimal(b["low"]), Decimal(b["close"]), Decimal(b["volume"]))
-                            for b in data["data"]["bars"]
+                            Candle(int(b["start_ts"]), to_decimal(b["open"]), to_decimal(b["high"]),
+                                   to_decimal(b["low"]), to_decimal(b["close"]), to_decimal(b["volume"]))
+                            for b in data["data"]["bars"] if _finite_bar(b)
                         ]
                         if len(found) == len(wanted):
                             return

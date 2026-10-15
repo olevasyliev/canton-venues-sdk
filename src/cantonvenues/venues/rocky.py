@@ -24,13 +24,16 @@ Venue quirks this adapter absorbs:
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import httpx
 
-from ..core.models import BookLevel, FundingRate, Market, OrderBook, Side, Ticker, Trade, live_levels
+from ..core.models import FundingRate, Market, OrderBook, Side, Ticker, Trade, book_levels, to_decimal
 from ..core.venue import MarketDataAdapter, VenueRequestError
+
+log = logging.getLogger("cantonvenues")
 
 BASE_URL = "https://api.rocky.exchange"
 SPOT, PERP = "spot", "perp"
@@ -38,7 +41,7 @@ _PREFIX = {SPOT: "/api/v3", PERP: "/fapi/v1"}
 
 
 def _dec(value: object) -> Decimal:
-    return Decimal(str(value)) if value not in (None, "") else Decimal(0)
+    return to_decimal(value, Decimal(0))
 
 
 def _ts(millis: object) -> datetime:
@@ -115,23 +118,26 @@ class RockyAdapter(MarketDataAdapter):
     async def tickers(self, symbol: str | None = None) -> list[Ticker]:
         raw = await self._get("/ticker/24hr", {"symbol": symbol} if symbol else None)
         rows = [raw] if isinstance(raw, dict) else (raw or [])
-        return [
-            Ticker(
-                symbol=t["symbol"],
-                last_price=_dec(t.get("lastPrice")),
-                index_price=Decimal(0),
-                mark_price=Decimal(0),
-                open_interest=Decimal(0),
-                volume_24h=_dec(t.get("volume")),
-                turnover_24h=_dec(t.get("quoteVolume")),
-                funding_rate=Decimal(0),
-                next_funding_time=None,
-                # the ticker's bid/ask are always "0": read the book instead
-                best_bid=None,
-                best_ask=None,
-            )
-            for t in rows
-        ]
+        out = []
+        for t in rows:
+            try:  # one row that will not parse (a "NaN" volume) is left out, not every ticker
+                out.append(Ticker(
+                    symbol=t["symbol"],
+                    last_price=_dec(t.get("lastPrice")),
+                    index_price=Decimal(0),
+                    mark_price=Decimal(0),
+                    open_interest=Decimal(0),
+                    volume_24h=_dec(t.get("volume")),
+                    turnover_24h=_dec(t.get("quoteVolume")),
+                    funding_rate=Decimal(0),
+                    next_funding_time=None,
+                    # the ticker's bid/ask are always "0": read the book instead
+                    best_bid=None,
+                    best_ask=None,
+                ))
+            except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+                log.warning("rocky: ticker row skipped: %r", exc)
+        return out
 
     async def order_book(self, symbol: str, depth: int = 20) -> OrderBook:
         raw = await self._get("/depth", {"symbol": symbol, "limit": depth})
@@ -141,8 +147,8 @@ class RockyAdapter(MarketDataAdapter):
         return OrderBook(
             symbol=symbol,
             timestamp=_ts(stamp) if stamp else datetime.now(UTC),
-            bids=live_levels(BookLevel(price=_dec(p), size=_dec(q)) for p, q in raw.get("bids", [])),
-            asks=live_levels(BookLevel(price=_dec(p), size=_dec(q)) for p, q in raw.get("asks", [])),
+            bids=book_levels(raw.get("bids", [])),
+            asks=book_levels(raw.get("asks", [])),
         )
 
     async def recent_trades(self, symbol: str, limit: int = 50) -> list[Trade]:

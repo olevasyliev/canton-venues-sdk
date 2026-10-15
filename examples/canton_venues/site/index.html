@@ -443,7 +443,7 @@ body:not(.tv) #tokenview { display: none; }
 
   <section class="block" id="perps">
     <h2>Perpetuals</h2>
-    <p class="sub">Every perp market on Rocky and Ekiden. Basis is the perp price over the outside spot price (CoinGecko; CC against its Canton price). Ekiden basis uses its mark price.</p>
+    <p class="sub">Every perp market on Rocky and Ekiden. Basis is the perp price over the outside spot price (CoinGecko for BTC and ETH; gold and silver against Ekiden's spot index; CC against its Canton price). Ekiden basis uses its mark price.</p>
     <div class="panel"><div class="tablewrap"><table id="perptable"></table></div></div>
   </section>
 
@@ -727,7 +727,7 @@ function premTipHTML(a) {
   }
   return `<div class="ph">${icon(t, 20)}<span>${esc(a.symbol)} <span class="muted">vs ${esc(ref)}</span></span></div>
     <table><tbody>
-      <tr><td class="muted">${a.kind === "peg" ? "Peg" : "Outside, CoinGecko"}</td><td class="num">${px(a.reference_usd)}</td><td></td></tr>
+      <tr><td class="muted">${a.kind === "peg" ? "Peg" : "Outside, " + esc(a.reference)}</td><td class="num">${px(a.reference_usd)}</td><td></td></tr>
       <tr><td class="muted">Canton average</td><td class="num">${px(a.canton_usd)}</td><td class="num ${tone(a.premium)}" style="font-weight:600">${pct(a.premium)}</td></tr>
       ${rows ? `<tr class="sep"><td colspan="3" class="muted" style="font-size:12px;text-align:left">By venue</td></tr>${rows}` : ""}
     </tbody></table>
@@ -1014,7 +1014,7 @@ function renderDesk() {
   }
   const routes = (D.scan?.routes || []).slice(0, 5), trades = a.trades || [];
   const d24 = a.last_24h || {};
-  $("arb").innerHTML = `<h3>Spread desk</h3><p class="sub">Buys a token on one venue and sells it on the other at the size that pays most, after network costs (Cantex 0.86 CC a swap, measured; OneSwap $1.75, as it states; others 1.5 CC, assumed), and only above $0.50. Each spread is booked once, when it opens.</p>
+  $("arb").innerHTML = `<h3>Spread desk</h3><p class="sub">Buys a token on one venue and sells it on the other at the size that pays most, after network costs (Cantex 0.86 CC a swap, measured; OneSwap $1.75 and Tradecraft $0.10, as they state; Temple, Rocky and Pool Party 1.5 CC, assumed), and only above $0.50. Each spread is booked once, when it opens.</p>
     <div class="kpi num">${d24.trips || 0}<small>${d24.trips === 1 ? "trip" : "trips"} in the last 24 hours${d24.median_net_usd != null ? `, median +$${d24.median_net_usd.toFixed(2)} a trip` : ""}</small></div>
     <p class="sub" style="margin:0 0 10px">Paper, and with no one competing for the spread.</p>
     ${trades.length ? `<table class="mini"><tbody>${trades.slice(-4).reverse().map((t) => `<tr><td class="l num muted">${hm(t.t)}</td><td class="l">${esc(t.token)}</td><td class="l">${V[t.buy_on]} → ${V[t.sell_on]}</td><td class="num up">+$${t.net_usd.toFixed(2)}</td></tr>`).join("")}</tbody></table>` : ""}
@@ -1036,7 +1036,7 @@ function renderStudy() {
   if (!runs.length) return;
   const s = runs[runs.length - 1], d = new Date(s.start * 1000);
   const when = d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) + ", from " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  $("studylead").innerHTML = `Latest run, ${studyDur(s)} on ${when}: every pool and book on Cantex, Tradecraft, OneSwap, Pool Party and Rocky, snapshotted every ${s.interval_s} seconds. <b>${s.episodes} ${s.episodes === 1 ? "spread" : "spreads"}</b> cleared $0.50 after costs` +
+  $("studylead").innerHTML = `Latest run, ${studyDur(s)} on ${when}: every pool and book on Cantex, Tradecraft, OneSwap, Pool Party, Rocky and Temple, snapshotted every ${s.interval_s} seconds. <b>${s.episodes} ${s.episodes === 1 ? "spread" : "spreads"}</b> cleared $0.50 after costs` +
     (s.episodes ? `; the median one lived <b>${s.median_life_s} seconds</b>, and in ${s.pools_changed} of ${s.episodes} the pools traded while it stood` + (s.pools_changed * 2 >= s.episodes ? ", so other traders are already closing them." : ".") : ".");
   const max = Math.max(...s.hist.map((h) => h.n)), W = 100;
   $("studyhist").innerHTML = s.hist.map((h) => `<div class="hrow" tabindex="0" title="${h.n} ${h.n === 1 ? "spread" : "spreads"} lived ${h.label}"><span class="hl">${h.label}</span><span class="hb"><i style="width:${h.n / max * W}%"></i></span><span class="hn num">${h.n}</span></div>`).join("");

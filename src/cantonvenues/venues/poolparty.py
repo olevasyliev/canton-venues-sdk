@@ -27,7 +27,7 @@ from decimal import Decimal
 
 import httpx
 
-from ..core.models import Instrument
+from ..core.models import Instrument, to_decimal
 from ..core.venue import VenueRequestError
 from .reserves import ReservePool
 
@@ -84,7 +84,7 @@ class PoolPartyPublicData:
                 continue
             (a, ra), (b, rb) = sorted(reserves.items(), key=lambda kv: name.find(kv[0]))
             try:  # one malformed row is skipped, not the whole venue
-                ra, rb = Decimal(str(ra)), Decimal(str(rb))
+                ra, rb = to_decimal(ra), to_decimal(rb)
             except ArithmeticError as exc:
                 log.warning("poolparty: pool %s skipped: %r", name, exc)
                 continue
@@ -103,7 +103,7 @@ class PoolPartyPublicData:
         out: dict[str, dict[str, Decimal]] = {}
         for name, p in (raw.get("perPool") or {}).items():
             try:  # a pool whose volume will not parse is left out, not every pool (a null, 2026-10-14)
-                out[name] = {tok: Decimal(str(v)) for tok, v in ((p or {}).get("volume") or {}).items()}
+                out[name] = {tok: to_decimal(v) for tok, v in ((p or {}).get("volume") or {}).items()}
             except (ArithmeticError, AttributeError) as exc:
                 log.warning("poolparty: volume of %s skipped: %r", name, exc)
         return out

@@ -78,7 +78,9 @@ def http_get(url: str, params: dict | None = None, sleep: Callable[[float], None
             with urllib.request.urlopen(req, timeout=30) as r:
                 return json.loads(r.read())
         except urllib.error.HTTPError as exc:
-            if exc.code < 500 or wait is None:
+            # a server error or a rate limit (CoinGecko's 429 cost three checks and a message) is asked
+            # again; any other client error is final
+            if (exc.code < 500 and exc.code != 429) or wait is None:
                 raise
         except (urllib.error.URLError, TimeoutError):
             if wait is None:

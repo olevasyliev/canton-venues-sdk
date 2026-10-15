@@ -26,6 +26,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import math
 import os
 import statistics
 import time
@@ -46,6 +47,7 @@ from publish_guard import PublishGuard
 from cantonvenues import (
     CantexPublicData,
     EkidenAdapter,
+    Instrument,
     OneSwapPublicData,
     PoolPartyPublicData,
     RockyAdapter,
@@ -149,11 +151,31 @@ VENUES = [
 ]
 
 
+def _finite(x, where: list):
+    """``x`` with every NaN or infinite float replaced by None; ``where`` collects their paths."""
+    if isinstance(x, float) and not math.isfinite(x):
+        where.append(x)
+        return None
+    if isinstance(x, Decimal):
+        return _finite(float(x), where)
+    if isinstance(x, dict):
+        return {k: _finite(v, where) for k, v in x.items()}
+    if isinstance(x, list | tuple):
+        return [_finite(v, where) for v in x]
+    return x
+
+
 def write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    # a NaN or infinite number fails here, loudly, instead of a file the page's JSON.parse rejects
-    tmp.write_text(json.dumps(data, separators=(",", ":"), default=float, allow_nan=False))
+    # A NaN or infinite number is written as null, with a warning: the file stays valid JSON and the
+    # tick goes on. Until 2026-10-15 it failed the write, so one "NaN" in any venue's field (13 of 17
+    # tried) stopped every tick; the adapters now refuse such a value at the row, this is the last net.
+    bad: list = []
+    clean = _finite(data, bad)
+    if bad:
+        log.warning("%s: %d non-finite number(s) written as null", path.name, len(bad))
+    tmp.write_text(json.dumps(clean, separators=(",", ":"), default=float, allow_nan=False))
     os.replace(tmp, path)
 
 
@@ -200,7 +222,8 @@ def _gecko_usd(gecko: dict, gid: str, now: int) -> float | None:
     row = gecko.get(gid) or {}
     t, usd = row.get("last_updated_at"), row.get("usd")
     # a 0 or a non-number is no price (a 0 read as "unit mismatch, excluded" before 2026-10-14)
-    if not isinstance(usd, int | float) or usd <= 0 or t is None or now - t > m.REFERENCE_MAX_AGE_S:
+    if not isinstance(usd, int | float) or not math.isfinite(usd) or usd <= 0 or t is None \
+            or now - t > m.REFERENCE_MAX_AGE_S:
         return None
     return usd
 
@@ -227,8 +250,16 @@ class Collector:
         self.rocky_books: dict[str, float] = {}  # each Rocky spot book's 24h turnover in dollars, this tick
         self.metal_spot: dict[str, Decimal] = {}  # gold and silver spot this tick (METALS), when usable
         self.metal_seen: dict[str, tuple[Decimal, int]] = {}  # each index's last value and since when
-        # each outside source's last good read (unix time), for summary.json and the watchdog
-        self.sources: dict[str, int] = {}
+        # each outside source's last good read (unix time), for summary.json and the watchdog; carried
+        # over from the last summary, so a source broken by a deploy ages and is told (it was empty
+        # after every restart, and a source absent from it was never a trouble)
+        self.sources: dict[str, int] = {
+            k: v for k, v in (load_json(out / "api" / "v1" / "summary.json", {}).get("sources") or {}).items()
+            if isinstance(v, int) and k != "llama"}
+        self.fail_times: list[int] = []  # ticks that failed, for summary.json failed_ticks_1h
+        self.last_error: dict | None = None  # the last failed tick's error and time
+        self.temple_cc_book = False  # Temple's CC/USDCx book read this tick (it weighs most in the CC price)
+        self.vol_seen: dict[str, dict] = {"tc": {}, "pp": {}}  # per-pool 24h volume, last good read and when
         self.started = int(time.time())
         self.usdcx_last = Decimal(1)  # CoinGecko's last good USDCx price
         self.temple_error: str | None = None  # why Temple's keyed books were not read, when they were not
@@ -257,6 +288,10 @@ class Collector:
         # ("venue:A/B" -> [reserves, since]); pools marked not trading this tick, by (venue, token key)
         # for CC pools and on their ``other_pools`` entry for the rest
         self.pool_still: dict[str, list] = load_json(self.state / "pools_still.json", {})
+        # CC's instrument as last read from Cantex, kept on disk: a restart while Cantex is down failed
+        # every tick until Cantex answered
+        if (inst := load_json(self.state / "cc_instrument.json", None)) and {"admin", "id"} <= set(inst):
+            self.cc_inst = Instrument(inst["admin"], inst["id"])
         self.still: dict[tuple[str, str], dict] = {}
 
     async def start(self) -> None:
@@ -282,21 +317,29 @@ class Collector:
         symbols = [mk["symbol"] for mk in cantex_markets if mk.get("source") == "cantex" and mk.get("symbol")]
         try:
             if symbols:  # none while Cantex is down: the last candles stay, for their hour
-                self.slow["candles"] = await self.cantex.candles(symbols, 3600, timeout=40)
+                got = await self.cantex.candles(symbols, 3600, timeout=40)
+                if not got:  # the websocket wait ran out with nothing: no read, the last candles stand
+                    raise ValueError("no candles before the timeout")
+                self.slow["candles"] = got
                 self.sources["candles"] = int(time.time())
         except Exception as exc:  # noqa: BLE001
             log.warning("candles: %s", exc)
         if tc_states:  # none while Tradecraft is down: its last volumes stay, for their hour
-            vols, failed = {}, 0
+            got = {}
             for st in tc_states:
-                try:  # one pool that will not answer is left out, not every pool's volume
-                    v = await self.tradecraft.pool_volume_usd(st.token_a, st.token_b)
-                    vols[st.amm_id] = float(v.get("1d") or 0)
+                try:
+                    v = _num((await self.tradecraft.pool_volume_usd(st.token_a, st.token_b)).get("1d"))
+                    if v is None:  # a null or a non-number is unknown, not $0
+                        raise ValueError("1d volume missing")
+                    got[st.amm_id] = float(v)
                 except Exception as exc:  # noqa: BLE001
-                    failed += 1
                     log.warning("tradecraft volume %s: %r", st.amm_id, exc)
+            vols, missing = self._volume_seen("tc", got, [st.amm_id for st in tc_states])
             if vols:
                 self.slow["tc_volume"] = vols
+            # stamped only when every pool has a figure: one failing pool cut the venue's total 41%
+            # with nothing said; now the total ages out after an hour and the watchdog tells
+            if vols and not missing:
                 self.sources["tc_volume"] = self.fresh["tradecraft"] = int(time.time())
         try:
             # the per-protocol daily breakdown feeds each venue page's volume history
@@ -337,17 +380,23 @@ class Collector:
         if temple is not None:
             try:
                 vol = await temple.settled_volume(24)
+                total = _num(vol.get("total_volume_usd"))
+                if total is None:
+                    raise ValueError("total_volume_usd missing or not a number")
                 markets = {}
                 for mk in vol["markets"]:
-                    try:  # one market that will not parse is left out, not Temple's whole volume
-                        markets[mk["symbol"]] = float(mk["quote_volume"])
-                    except (KeyError, TypeError, ValueError) as exc:
-                        log.warning("temple volume %s: %r", mk.get("symbol"), exc)
+                    # one market that will not parse is left out, not Temple's whole volume
+                    if (q := _num(mk.get("quote_volume"))) is not None and mk.get("symbol"):
+                        markets[mk["symbol"]] = float(q)
+                    else:
+                        log.warning("temple volume %s: not a number", mk.get("symbol"))
                 self.slow["temple_volume"] = markets
-                self.slow["temple_total"] = float(vol["total_volume_usd"])
+                self.slow["temple_total"] = float(total)
                 self.sources["temple_volume"] = self.fresh["temple"] = int(time.time())
             except Exception as exc:  # noqa: BLE001
-                self._drop("temple", exc)
+                # the keyless volume failing says nothing of the keyed books: Temple stays connected
+                # (it was dropped, and its books went unread for the tick); its volume ages out
+                log.warning("temple settled volume: %r", exc)
         try:
             self.slow["tokens_info"] = await self.cantex.tokens()
         except Exception as exc:  # noqa: BLE001
@@ -387,10 +436,23 @@ class Collector:
         found = next((s.token_a if s.symbol_a == CC else s.token_b
                       for s in cx_states if CC in (s.symbol_a, s.symbol_b)), None)
         if found is not None:
+            if found != self.cc_inst:
+                write_json(self.state / "cc_instrument.json", {"admin": found.admin, "id": found.id})
             self.cc_inst = found
         if self.cc_inst is None:
             raise RuntimeError("CC's instrument is unknown: Cantex has not answered since the start")
         return self.cc_inst
+
+    def _volume_seen(self, venue: str, got: dict[str, float], pools: list[str]) -> tuple[dict[str, float], list[str]]:
+        """Each pool's 24h volume: this read's, or its last good one while under an hour old. Returns
+        the figures and the pools left without one (a pool that does not answer once no longer drops
+        out of the venue's total)."""
+        now = time.time()
+        seen = self.vol_seen[venue]
+        seen.update({k: (v, now) for k, v in got.items()})
+        vols = {k: v for k, (v, t) in seen.items() if now - t <= VOLUME_MAX_AGE_S}
+        self.vol_seen[venue] = {k: x for k, x in seen.items() if now - x[1] <= 86400}
+        return vols, [k for k in pools if k not in vols]
 
     def _drop(self, name: str, exc: Exception) -> None:
         log.warning("%s: %s", name, exc)
@@ -409,15 +471,26 @@ class Collector:
             markets = await rocky.markets()
             # A dollar token is worth its peg here, not its price in Canton's pools: valuing USDC.B at
             # its pool premium (0.28% on 2026-10-04) made a CBTC trip through Rocky's USDC.B book look
-            # like $150 per $100K when the same books at par lost $128.
-            quote_usd = {q: (usdcx_usd if k == USDCX else Decimal(1)) for q, k in ROCKY_QUOTES.items()}
+            # like $150 per $100K when the same books at par lost $128. Off its peg by more than 1% (the
+            # dollar routes' guard), USDC.B is its pool price here too, not $1.
+            usdcb = m.weighted_usd([(self._venue_usd(v, p, cc_usd), m.amm_depth_usd(p, cc_usd))
+                                    for v, p in books.get("USDC.B", {}).items()])
+            par = usdcb is None or abs(usdcb - 1) <= Decimal("0.01")
+            quote_usd = {q: (usdcx_usd if k == USDCX else Decimal(1) if par else usdcb) for q, k in ROCKY_QUOTES.items()}
             found: dict = {}
             kept: dict = {}
+            tried = failed = 0
             for mk in markets:  # every dollar-quoted book of a token we price
                 quote, k = m.key(mk.quote), m.key(mk.base)
                 if quote not in quote_usd or k not in books:
                     continue
-                book = await rocky.order_book(mk.symbol, 100)
+                tried += 1
+                try:  # one book that does not answer is left out, not every Rocky book
+                    book = await rocky.order_book(mk.symbol, 100)
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    log.warning("rocky book %s: %r", mk.symbol, exc)
+                    continue
                 if book.mid_price is None:
                     continue
                 bv = m.BookVenue("rocky", mk.symbol, tuple((lv.price, lv.size) for lv in book.bids),
@@ -429,6 +502,8 @@ class Collector:
                     "price_usd": book.mid_price * quote_usd[quote],
                     "depth_usd": m.book_depth_usd(book.bids, book.asks, book.mid_price, quote_usd[quote]),
                     "spread_bps": r((book.best_ask.price / book.best_bid.price - 1) * 10_000, 2)})
+            if tried and not found:  # every book failed or one-sided: Rocky was not read, not "priced"
+                raise ValueError(f"no usable book ({failed} of {tried} failed)")
             # a token's depth on Rocky is every one of its books (CBTC: a USDCx and a USDC.B book, each
             # ~$35M within 1%, only the deeper one counted before 2026-10-14); the deepest is named
             out: dict = {}
@@ -463,18 +538,28 @@ class Collector:
         Volume is not taken from here: the keyless settled-volume route already counts it.
         """
         temple = await self._venue("temple")
-        self.temple_priced = False
+        self.temple_priced = self.temple_cc_book = False
         if temple is None or not temple.has_key:
             return {}, {}, None, None
         try:
-            out, kept, cc, cc_book = {}, {}, None, None
+            out, kept, cc, cc_book, errors = {}, {}, None, None, []
             for t in await temple.tickers():
                 base, _, quote = t.symbol.partition("/")
                 k = m.key(base)
                 if quote != "USDCx" or (k not in books and k != CC):
                     continue
-                book = await temple.order_book(t.symbol, 200)
-                if book.mid_price is None:
+                book = None
+                for attempt in range(2):  # one book that fails is asked again, then left out alone (one
+                    try:                  # 502 dropped every Temple book, its CC book included)
+                        book = await temple.order_book(t.symbol, 200)
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        if attempt:
+                            errors.append(f"{t.symbol}: {type(exc).__name__}: {exc}"[:120])
+                if book is None or book.mid_price is None:
+                    continue
+                if book.best_bid.price >= book.best_ask.price:  # a crossed book is no market
+                    errors.append(f"{t.symbol}: crossed book")
                     continue
                 depth = m.book_depth_usd(book.bids, book.asks, book.mid_price, usdcx_usd)
                 info = {"symbol": t.symbol, "quote": USDCX, "price_usd": r(book.mid_price * usdcx_usd, 8),
@@ -489,9 +574,13 @@ class Collector:
                     continue
                 out[k] = {"temple": info}
                 kept[k] = {"temple": bv}
-            self.temple_priced = bool(out)
+            self.temple_priced, self.temple_cc_book = bool(out), cc_book is not None
+            now = int(time.time())
             if self.temple_priced:  # the keyed read, stamped apart from the keyless settled volume
-                self.sources["temple_book"], self.temple_error = int(time.time()), None
+                self.sources["temple_book"] = now
+            if self.temple_cc_book:  # the deepest CC/USDCx market: without it CC is priced by the pools
+                self.sources["temple_cc_book"] = now
+            self.temple_error = "; ".join(errors)[:200] or None
             return out, kept, cc, cc_book
         except Exception as exc:  # noqa: BLE001
             self.temple_error = f"{type(exc).__name__}: {exc}"[:200]  # a key that stops working is seen
@@ -730,10 +819,14 @@ class Collector:
         try:
             got = await self._json(GECKO, {"ids": ",".join(ids), "vs_currencies": "usd",
                                            "include_24hr_change": "true", "include_last_updated_at": "true"})
-            if isinstance(got, dict) and got:
+            # an answer without CC's or USDCx's price is no read: every premium and peg hangs on them
+            usable = isinstance(got, dict) and all(
+                isinstance((got.get(g) or {}).get("usd"), int | float) and math.isfinite(got[g]["usd"])
+                for g in ("canton-network", USDCX_GECKO))
+            if usable:
                 self.sources["gecko"] = int(time.time())
                 return got
-            raise ValueError("an empty answer")
+            raise ValueError("an answer without CC's or USDCx's price")
         except Exception as exc:  # noqa: BLE001
             log.warning("coingecko: %s", exc)
             # the last answer stands in for a few minutes only; past that every reference is missing
@@ -822,7 +915,9 @@ class Collector:
             try:
                 pools = await src.pools()
                 if venue == "poolparty":
-                    self.slow["pp_volume"] = await src.volume()
+                    got = await src.volume()  # a pool whose volume will not parse keeps its last good one
+                    vols, _ = self._volume_seen("pp", got, list(got))
+                    self.slow["pp_volume"] = vols
                 self.fresh[venue] = int(time.time())
             except Exception as exc:  # noqa: BLE001
                 self._drop(venue, exc)
@@ -1018,7 +1113,10 @@ class Collector:
         cc_markets = self._still_cc_markets(cc_markets, candidates, usdcx_usd, now)
         cc_usd = m.cc_price_usd(cc_markets, usdcx_usd)
         self.cc_usd_last = cc_usd
-        self.cc_at = {v: p.mid * usdcx_usd for v, p in cc_markets.items()}
+        # a venue's tokens are valued through its own CC/USDCx market only when that market holds $1K or
+        # more: a $47 pool 20% off moved every price on its venue 20% (replay, 2026-10-15)
+        self.cc_at = {v: p.mid * usdcx_usd for v, p in cc_markets.items()
+                      if isinstance(p, m.CCBook) or 2 * p.cc_reserve * cc_usd >= MIN_MARKET_USD}
 
         ob, ob_books, rocky_spot_vol = await self._rocky_spot(books, cc_usd, usdcx_usd)
         for k, v in t_ob.items():
@@ -1256,12 +1354,17 @@ class Collector:
                 vol_cx[base] = vol_cx.get(base, 0) + float(_num(t.get("target_volume")) or 0) * float(cc_usd)
             elif base == CC:
                 vol_cx[target] = vol_cx.get(target, 0) + float(_num(t.get("base_volume")) or 0) * float(cc_usd)
-        tc_vol = self.slow.get("tc_volume", {})
+        # a volume past its age limit is unknown here too, as in venues.json (it stood in for as long as
+        # the read failed): a token on that venue then shows no "not traded"
+        now = now_ms // 1000
+        tc_live = self._fresh("tc_volume", now)
+        temple_live = self._fresh("temple_volume", now, TEMPLE_MAX_AGE_S)
+        tc_vol = self.slow.get("tc_volume", {}) if tc_live else {}
         pp_vol, _ = self._pp_volume_usd(cc_usd)
         # Temple quotes everything in USDCx, which the settled-volume route already reports in dollars.
         # Its CC/USDCx market is credited to USDCx, as every CC/USDCx pool's volume is
         temple_vol: dict[str, float] = {}
-        for s, v in (self.slow.get("temple_volume") or {}).items():
+        for s, v in ((self.slow.get("temple_volume") or {}) if temple_live else {}).items():
             base, _, quote = s.partition("/")
             if quote == "USDCx":
                 k = m.key(quote) if m.key(base) == CC else m.key(base)
@@ -1297,7 +1400,9 @@ class Collector:
                     hourly[t // 3_600_000] = (t, v)
                 week = list(hourly.values())
             spark = [round(v, 8) for t, v in week][-168:]
-            traded = None if vol == 0 and "oneswap" in venues else vol > 0
+            unknown = ("oneswap" in venues or ("tradecraft" in venues and not tc_live)
+                       or ("temple" in venues and not temple_live))
+            traded = None if vol == 0 and unknown else vol > 0
             # under $1K traded in 24h its price is CC's times a frozen pool ratio: a 24h "move" would be
             # CC's (USDM1 -6.6%, six $20 pools -7.1% on 2026-10-15, CC -12.5%), so none is published
             quiet = traded is False or (traded and vol < m.MIN_TRADED_USD)
@@ -1402,7 +1507,11 @@ class Collector:
             for v, p in pools.items():
                 if (v, k) in self.still:  # not trading: no market for any route
                     continue
-                usd = p.depth_usd() if isinstance(p, m.CCBook) else 2 * p.cc_reserve * self.cc_usd_last
+                # a CC pool is as deep as its thinner side: sized by CC alone, a pool drained of its token
+                # passed the $1K floor and paid out its whole CC side for $1 (re-audit 2026-10-15)
+                usd = p.depth_usd() if isinstance(p, m.CCBook) else 2 * min(
+                    p.cc_reserve * self.cc_usd_last,
+                    p.token_reserve * prices[k] if prices.get(k) else p.cc_reserve * self.cc_usd_last)
                 hops.setdefault(v, []).append(dataclasses.replace(m.pool_hop(p), usd=usd))
         for p in self.other_pools:
             if p["hop"] is not None and not p.get("still") and (tvl := self._other_tvl(p, prices) or 0) >= MIN_MARKET_USD:
@@ -1542,7 +1651,7 @@ class Collector:
                 v = float(_num(t.get("target_volume") if m.key(t["target_currency"]) == CC
                                else t.get("base_volume")) or 0)
                 cx_vol[other] = cx_vol.get(other, 0) + v * float(cc_usd)
-        tc_vol = self.slow.get("tc_volume", {})
+        tc_vol = self.slow.get("tc_volume", {}) if self._fresh("tc_volume", int(time.time())) else {}
         pp_vol, _ = self._pp_volume_usd(cc_usd)
         tc_by_sym = {}
         for st in tc_states:
@@ -1601,6 +1710,10 @@ class Collector:
             # each outside source's last good read (the watchdog's age limits)
             "optional_down": self._optional_down(now),
             "temple_priced": self.temple_priced,
+            "temple_cc_book": self.temple_cc_book,
+            # ticks that failed in the last hour (of about 12): the watchdog sees every other one at most
+            "failed_ticks_1h": sum(1 for t in self.fail_times if now - t <= 3600),
+            "last_error": self.last_error if self.last_error and now - self.last_error["t"] <= 3600 else None,
             # pools whose reserves stood still while their price left the market: in no comparison
             "pools_not_trading": self._still_json(),
             **({"temple_error": self.temple_error} if self.temple_error else {}),
@@ -1626,8 +1739,11 @@ async def main() -> None:
                 await c.tick()
             except Exception as exc:  # one bad tick must not stop the service
                 log.exception("tick failed")
+                now = int(time.time())
+                c.fail_times = [t for t in c.fail_times if now - t <= 3600] + [now]
+                c.last_error = {"t": now, "error": str(exc)[:300]}
                 s = load_json(c.api / "summary.json", {})
-                s.update(status="error", error=str(exc)[:300], error_t=int(time.time()))
+                s.update(status="error", error=str(exc)[:300], error_t=now, failed_ticks_1h=len(c.fail_times))
                 write_json(c.api / "summary.json", s)
             if args.once:
                 break
