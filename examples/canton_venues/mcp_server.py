@@ -62,6 +62,16 @@ def _books() -> tuple[dict, float]:
     return books, raw["cc_usd"]
 
 
+def _pair_fees() -> None:
+    """Each pair's own network fee where the venue's quotes name it (Cantex), from the collector's
+    fee table in execution.json, so a quote here nets the same fees as the site."""
+    m.PAIR_FEE_CC.clear()
+    for v, row in ((load("execution") or {}).get("network_fee") or {}).items():
+        for pair, fee in (row.get("pairs_cc") or {}).items():
+            a, _, b = pair.partition("/")
+            m.PAIR_FEE_CC[(v, frozenset((a, b)))] = Decimal(str(fee))
+
+
 def _token_row(key: str) -> dict | None:
     return next((t for t in load("tokens")["tokens"] if t["key"] == m.key(key)), None)
 
@@ -174,6 +184,7 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
     reserves have stood still while its price left the market is no market here (`not_trading`)."""
     raw = load("pools")
     cc_usd = Decimal(str(raw["cc_usd"]))
+    _pair_fees()
     if (amount is None) == (amount_usd is None):
         raise ToolError("give exactly one of amount or amount_usd")
     s, b = m.key(sell), m.key(buy)
@@ -196,7 +207,8 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
         paths = m.venue_paths(hops, s, b, m.MIN_MARKET_USD)
         if not paths:
             continue
-        fee = m.network_fee_usd(v, cc_usd) / out_usd if out_usd else Decimal(0)
+        def fee(path, v=v):  # each swap's network fee in output units (Cantex: its pair's own)
+            return m.path_fee_usd(v, path, cc_usd) / out_usd if out_usd else Decimal(0)
         got, path = m.Route(v, names.get(b, b), s, b, tuple(paths)).best(True, Decimal(str(amount)), fee)
         if got <= 0:
             by_venue[v] = {"amount_out": None, "note": "too thin for this size"}
@@ -205,7 +217,7 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
         by_venue[v] = {"amount_out": _r(got, 10), "swaps": len(path),
                        **({"via": names.get(via, via)} if via else {}),
                        "markets": [h.market or f"{names.get(h.a, h.a)}/{names.get(h.b, h.b)} pool" for h in path],
-                       "after_network_fee": _r(got - len(path) * fee, 10) if out_usd else None}
+                       "after_network_fee": _r(got - fee(path), 10) if out_usd else None}
     if not by_venue:
         raise ToolError(f"no venue trades {sell!r} for {buy!r} in one or two swaps; call list_tokens() for symbols")
     filled = {v: q for v, q in by_venue.items() if q["amount_out"]}

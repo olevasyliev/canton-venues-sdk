@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Canton Venues quote check every three hours
+
+[Timer]
+OnCalendar=*-*-* 00/3:20:00 UTC
+Persistent=false
+Unit=canton-venues-quotecheck.service
+
+[Install]
+WantedBy=timers.target

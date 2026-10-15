@@ -72,6 +72,8 @@ VOLUME_MAX_AGE_S = 3600
 LLAMA_MAX_AGE_S = 6 * 3600
 # Temple's row reads "down" once its keyless settled volume has not been read for this long
 TEMPLE_MAX_AGE_S = 45 * 60
+# Cantex's network fee per pair from the quote check (quotecheck.py, every 3 h) stands this long
+PAIR_FEE_MAX_AGE_S = 12 * 3600
 HISTORY_KEEP_S = 8 * 24 * 3600
 DESK_KEEP = 400
 LLAMA = "https://api.llama.fi"
@@ -1051,10 +1053,21 @@ class Collector:
         finally:
             self.tick_no += 1
 
+    def _pair_fees(self, now: int) -> None:
+        """Cantex's network fee per pair, as its own quotes named it (``<state>/quote_check.json``),
+        while the record is fresh; otherwise every pair takes the venue's point (model.NETWORK_FEE)."""
+        rec = load_json(self.state / "quote_check.json", {})
+        m.PAIR_FEE_CC.clear()
+        if now - rec.get("t", 0) <= PAIR_FEE_MAX_AGE_S:
+            for tok, fee in (rec.get("cantex_fee_cc") or {}).items():
+                if (d := _num(fee)) is not None and d > 0:
+                    m.PAIR_FEE_CC[("cantex", frozenset((CC, m.key(tok))))] = d
+
     async def _tick(self) -> None:
         started = time.monotonic()
         now = int(time.time())
         now_ms = now * 1000
+        self._pair_fees(now)
         # A core venue that does not answer is left out of this tick: none of its prices are shown (an
         # older read is never passed off as current), its row says down, and the rest is published.
         cx_states, cx_volume, tickers = [], {}, []

@@ -29,7 +29,8 @@ ssh "$SERVER" "
     current/examples/canton_venues/deploy/canton-venues-study.service current/examples/canton_venues/deploy/canton-venues-study.timer \
     current/examples/canton_venues/deploy/canton-venues-crosscheck.service current/examples/canton_venues/deploy/canton-venues-crosscheck.timer \
     current/examples/canton_venues/deploy/canton-venues-weekly.service current/examples/canton_venues/deploy/canton-venues-weekly.timer \
-    current/examples/canton_venues/deploy/canton-venues-watchdog.service current/examples/canton_venues/deploy/canton-venues-watchdog.timer /etc/systemd/system/
+    current/examples/canton_venues/deploy/canton-venues-watchdog.service current/examples/canton_venues/deploy/canton-venues-watchdog.timer \
+    current/examples/canton_venues/deploy/canton-venues-quotecheck.service current/examples/canton_venues/deploy/canton-venues-quotecheck.timer /etc/systemd/system/
   # (re)install the vhost only when the repo's conf-version changes; certbot then adds TLS
   if ! grep -q \"\$(head -1 current/examples/canton_venues/deploy/nginx.conf)\" /etc/nginx/sites-available/canton-venues 2>/dev/null; then
     install -m 644 current/examples/canton_venues/deploy/nginx.conf /etc/nginx/sites-available/canton-venues
@@ -50,6 +51,8 @@ ssh "$SERVER" "
   # the watchdog's timer, enabled once: every ten minutes it reads the live site and messages the owner
   # on Telegram only when the snapshot is over 30 min old, and once when it is fresh again
   systemctl is-enabled canton-venues-watchdog.timer >/dev/null 2>&1 || systemctl enable --now canton-venues-watchdog.timer
+  # the quote check's timer, every three hours: our pool math against the venues' own quotes
+  systemctl is-enabled canton-venues-quotecheck.timer >/dev/null 2>&1 || systemctl enable --now canton-venues-quotecheck.timer
   systemctl restart canton-venues canton-venues-mcp canton-venues-contact
   sleep 3
   systemctl is-active canton-venues canton-venues-mcp canton-venues-contact

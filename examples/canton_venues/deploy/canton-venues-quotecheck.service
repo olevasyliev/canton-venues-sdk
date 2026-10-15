@@ -1,0 +1,16 @@
+[Unit]
+Description=Canton Venues quote check: our pool math against Tradecraft's and Cantex's own quotes, Cantex's network fee per pair; one Telegram message only on a gap that holds
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
+Environment=PYTHONUNBUFFERED=1
+# TELEGRAM_BOT_TOKEN and CONTACT_CHAT_ID as crosscheck.py; CANTEX_OPERATOR_KEY and CANTEX_TRADING_KEY
+# (our Cantex account, quote calls only) when present (chmod 600)
+EnvironmentFile=-/opt/canton-venues/.env
+ExecStart=/opt/canton-venues/.venv/bin/python quotecheck.py --api /var/www/canton-venues/api/v1 --state /var/www/canton-venues-state
+TimeoutStartSec=900
+MemoryMax=150M
+CPUQuota=20%

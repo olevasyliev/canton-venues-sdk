@@ -388,4 +388,5 @@ def test_paper_router_restarts_at_v3(tmp_path):
 def test_cantex_fee_range_is_the_measured_one():
     cc = D("0.12")
     lo, pt, hi = (m.network_fee_usd("cantex", cc, e) for e in ("low", "point", "high"))
-    assert lo == D("0.67") * cc and pt == D("0.86") * cc and hi == D("1.20") * cc
+    # Cantex's own quotes on all 24 CC pairs, 2026-10-15 (0.67/0.86/1.20 measured 03.10 was out of date)
+    assert lo == D("1.10") * cc and pt == D("1.36") * cc and hi == D("3.60") * cc

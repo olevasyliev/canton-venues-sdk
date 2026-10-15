@@ -568,7 +568,7 @@ async function get(name) {
   return r.json();
 }
 async function load() {
-  const names = ["summary", "tokens", "premium", "execution", "scan", "desk", "lp", "alerts", "venues", "perps", "spreads"];
+  const names = ["summary", "tokens", "premium", "execution", "scan", "desk", "lp", "alerts", "venues", "perps", "spreads", "quotecheck"];
   const got = await Promise.allSettled(names.map(get));
   got.forEach((g, i) => { if (g.status === "fulfilled") D[names[i]] = g.value; });
   if (!D.summary) { $("gstrip").textContent = "Market data is unavailable right now"; return; }
@@ -952,9 +952,20 @@ function renderExecution() {
   const bookNote = Object.entries(pair.books || {}).map(([v, b]) => ` ${V[v]} trades it on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "rocky" ? " (assumed: Rocky publishes no fee schedule)" : v === "temple" ? " (Temple's published rate)" : ""}.`).join("");
   $("execnote").innerHTML = (usd ? `Same dollar amount on every venue, each by its best route on its own markets: one order on a book, a pool against a dollar token, or dollars to CC to ${sym} through two of its own pools. USDC.B counts as USDCx while it holds within 1% of $1.`
     : "Each venue by its best route on its own markets, one swap or two (Temple: CC to USDCx, then USDCx to the token). Pool fees and price impact included.") + bookNote + (usd ? " Cost is measured against the Canton price." : "");
-  $("execnote").innerHTML += stillNote(pair.not_trading);
+  $("execnote").innerHTML += stillNote(pair.not_trading) + checkNote();
   const assumed = vs.filter((v) => (D.execution.network_fee || {})[v]?.basis === "assumed").map((v) => V[v]);
   if (D.execution.network_fee) $("execnote").innerHTML += ` Each venue's network fee per trade is taken off too${assumed.length ? `; for ${assumed.length > 1 ? assumed.slice(0, -1).join(", ") + " and " + assumed[assumed.length - 1] : assumed[0]} it is our assumption until we measure it` : ""}. Hover a figure for it before the fee.`;
+}
+// what our pool math was last checked against: the venues' own quote engines (quotecheck.py)
+function checkNote() {
+  const q = D.quotecheck; if (!q || !q.venues) return "";
+  const ok = ["tradecraft", "cantex"].map((v) => [v, q.venues[v]]).filter(([, s]) => s && s.checked);
+  if (!ok.length) return "";
+  const age = (Date.now() / 1000 - q.t) / 3600;
+  if (age > 12) return "";
+  const parts = ok.map(([v, s]) => `${V[v]} ${s.agree} of ${s.checked}`);
+  const gap = Math.max(...ok.map(([, s]) => s.max_gap_bp || 0));
+  return ` Checked against the venues' own quotes at ${utcHM(q.t)}: ${parts.join(", ")} trades agree${gap < 0.01 ? " to the last digit" : `, the largest gap ${gap.toFixed(2)} bp`} (<a href="${API}quotecheck.json">every trade</a>).`;
 }
 // pools whose reserves have stood still while their price left the market: named, left out
 const utcHM = (t) => new Date(t * 1000).toISOString().slice(11, 16) + " UTC";
