@@ -14,12 +14,12 @@ import channel  # noqa: E402
 MON = datetime(2026, 10, 12, 9, 5, tzinfo=UTC)
 
 
-def test_due_follows_the_weekday_once_a_day(monkeypatch):
-    monkeypatch.setattr(channel, "PRICE_CLAIMS_PAUSED", False)  # the schedule itself
+def test_due_follows_the_weekday_once_a_day():
+    checked = {"tradecraft", "cantex", "temple", "rocky"}  # a passing quote check (test_channel_pause)
     assert channel.due({}, MON) == "weekly"
     assert channel.due({}, MON.replace(hour=8)) is None
     assert channel.due({"date": "2026-10-12"}, MON) is None
-    assert [channel.due({}, MON.replace(day=d)) for d in range(13, 19)] == \
+    assert [channel.due({}, MON.replace(day=d), checked) for d in range(13, 19)] == \
         ["venue", "execution", "venue", "pegs", None, None]
 
 
@@ -33,10 +33,9 @@ def test_weekly_post_only_for_the_week_that_just_closed():
     assert channel.weekly_post({**w, "slug": "2026-10-10"}, MON) is None  # a held card is not posted
 
 
-def test_venue_post_takes_turns_and_skips_venues_without_a_card(monkeypatch):
-    monkeypatch.setattr(channel, "PRICE_CLAIMS_PAUSED", False)  # the schedule itself
-    pub = {"venues": {"temple": {"head": {"title": "The largest spot venue", "sub": "$29.7M"}},
-                      "rocky": {"head": {"title": "The largest perps venue", "sub": "$7.1M"}}}}
+def test_venue_post_takes_turns_and_skips_venues_without_a_card():
+    pub = {"venues": {"temple": {"head": {"rule": "spot_volume", "title": "The largest spot venue", "sub": "$29.7M"}},
+                      "rocky": {"head": {"rule": "perp_volume", "title": "The largest perps venue", "sub": "$7.1M"}}}}
     post, turn = channel.venue_post(pub, 0, {"temple": 5, "rocky": 6})
     assert post.photo.endswith("/venues/temple/card.png?v=5") and "<b>Temple</b>" in post.html
     post, turn = channel.venue_post(pub, turn, {"temple": 5, "rocky": 6})  # cantex has no head: skipped
@@ -46,7 +45,8 @@ def test_venue_post_takes_turns_and_skips_venues_without_a_card(monkeypatch):
     assert channel.venue_post({}, 0, {}) == (None, 0)
 
 
-def test_execution_post_counts_wins_net_of_fees(tmp_path):
+def test_execution_post_counts_wins_net_of_fees(tmp_path, monkeypatch):
+    monkeypatch.setattr(channel, "EXEC_SINCE", 0)  # the counting itself; the cut-off: test_channel_pause
     now = int(MON.timestamp())
     with (tmp_path / "2026-10-12.jsonl").open("w") as f:
         for h in range(30):

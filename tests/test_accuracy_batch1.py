@@ -360,7 +360,8 @@ def test_stale_copy_is_gone(tick):
     assert "3 CC pool to pool" not in (SITE / "mcp_server.py").read_text()
 
 
-def test_execution_post_names_the_assumed_network_fees(tmp_path):
+def test_execution_post_names_the_assumed_network_fees(tmp_path, monkeypatch):
+    monkeypatch.setattr(channel, "EXEC_SINCE", 0)  # samples from before the 15.10 cut-off
     now = int(datetime(2026, 10, 21, 9, 5, tzinfo=UTC).timestamp())
     fees = m.fee_table_json()
     with (tmp_path / "2026-10-21.jsonl").open("w") as f:
@@ -389,4 +390,4 @@ def test_cantex_fee_range_is_the_measured_one():
     cc = D("0.12")
     lo, pt, hi = (m.network_fee_usd("cantex", cc, e) for e in ("low", "point", "high"))
     # Cantex's own quotes on all 24 CC pairs, 2026-10-15 (0.67/0.86/1.20 measured 03.10 was out of date)
-    assert lo == D("1.10") * cc and pt == D("1.36") * cc and hi == D("3.60") * cc
+    assert lo == D("0.85") * cc and pt == D("1.36") * cc and hi == D("3.60") * cc

@@ -29,13 +29,19 @@ SITE = "https://cantonvenues.com"
 SEND_HOUR_UTC = 9
 # weekday() -> kind; Saturday and Sunday are left out
 SCHEDULE = {0: "weekly", 1: "venue", 2: "execution", 3: "venue", 4: "pegs"}
-# F 2026-10-15: until our quotes are checked every day against the venues' own quote APIs, the channel
-# says only what a venue's own API confirms (volume, liquidity, depth, counts). No best-price, spread,
-# peg or premium post or alert: the Wednesday execution and Friday pegs posts are skipped, a venue card
-# whose headline is a price claim is passed over, and loud alerts stay on the site. False when that
-# check runs.
-PRICE_CLAIMS_PAUSED = True
+# F 2026-10-15: a price claim in the channel (a best price, a spread, a peg, a premium) needs our quotes
+# checked against the venues' own: the quote check (quotecheck.py, hourly) must have passed for
+# Tradecraft and Cantex within ``CHECK_MAX_AGE_S``, and a claim may name only a venue whose prices are
+# checked: those two, whose quote engines our math matched, and the order books (Temple, Rocky: the
+# book is the venue's own data). OneSwap and Pool Party publish no quote to check against, so no claim
+# names them. Without a passing check the channel says only what a venue's API confirms (volume,
+# liquidity, depth, counts): no execution or pegs post, no price-headline card, no loud alert.
+CHECK_MAX_AGE_S = 3 * 3600
+BOOK_VENUES = {"temple", "rocky"}
 PRICE_KINDS = {"execution", "pegs"}
+# the hourly best-execution samples a post may count start here: Tradecraft's frozen pool, Cantex's
+# network fee four times too low and phantom routes are in the samples before (re-audit, 15.10)
+EXEC_SINCE = 1792069200  # 2026-10-15 13:00 UTC
 CHECKABLE_LEADS = {"spot_volume", "kind_volume", "perp_volume", "tvl", "tokens", "pool_count", "perp_markets",
                    "largest_pool", "pool_tvl", "token_depth", "unique_token", "pair_volume", "pools", "read"}
 MIN_LIQUIDITY_USD = 100_000   # a stablecoin or token below this is not news for the channel
@@ -56,12 +62,23 @@ class Post:
     photo: str | None = None  # an image URL Telegram fetches itself
 
 
-def due(state: dict, now: datetime) -> str | None:
-    """Today's kind, once, on the first tick at or after the send hour; None otherwise."""
+def checked_venues(check: dict | None, now: float) -> set[str]:
+    """The venues a price claim may name now: the order books, and the AMMs whose quotes our math
+    matched in a quote check under ``CHECK_MAX_AGE_S`` old. Empty when Tradecraft's or Cantex's check
+    did not pass: then no price claim at all."""
+    if not check or now - check.get("t", 0) > CHECK_MAX_AGE_S:
+        return set()
+    ok = {v for v, s in (check.get("venues") or {}).items() if s.get("status") == "ok"}
+    return (ok | BOOK_VENUES) if {"tradecraft", "cantex"} <= ok else set()
+
+
+def due(state: dict, now: datetime, checked: set[str] | None = None) -> str | None:
+    """Today's kind, once, on the first tick at or after the send hour; None otherwise (a price post
+    without a passing quote check: none)."""
     if now.hour < SEND_HOUR_UTC or state.get("date") == now.date().isoformat():
         return None
     kind = SCHEDULE.get(now.weekday())
-    return None if PRICE_CLAIMS_PAUSED and kind in PRICE_KINDS else kind
+    return None if kind in PRICE_KINDS and not checked else kind
 
 
 def signed(f: float, d: int = 1) -> str:
@@ -116,14 +133,17 @@ def weekly_post(w: dict | None, now: datetime) -> Post | None:
 
 # === Tuesday, Thursday: one venue ==========================================
 
-def venue_post(published: dict, turn: int, card_v: dict[str, int]) -> tuple[Post | None, int]:
-    """The next venue, in the site's order, that has a published headline and card, and the turn after it."""
+def venue_post(published: dict, turn: int, card_v: dict[str, int],
+               checked: set[str] | None = None) -> tuple[Post | None, int]:
+    """The next venue, in the site's order, that has a published headline and card, and the turn after
+    it; a card whose headline is a price claim only for a venue whose prices are checked."""
     order = [v["slug"] for v in VENUES]
     heads = (published or {}).get("venues") or {}
     for i in range(len(order)):
         slug = order[(turn + i) % len(order)]
         head = (heads.get(slug) or {}).get("head")
-        if not head or slug not in card_v or (PRICE_CLAIMS_PAUSED and head.get("rule") not in CHECKABLE_LEADS):
+        if not head or slug not in card_v or (head.get("rule") not in CHECKABLE_LEADS
+                                              and slug.replace("-", "") not in (checked or set())):
             continue
         name = next(v["name"] for v in VENUES if v["slug"] == slug)
         html = "\n".join([f"🏛 <b>{name}</b>: {head['title']}", head["sub"], "",
@@ -149,15 +169,17 @@ def read_exec(directory: Path, now: int) -> list[dict]:
     return sorted(out, key=lambda s: s["t"])
 
 
-def execution_post(samples: list[dict]) -> Post | None:
-    """For a CC order at each size: which venue returned the most, net of network fees, how often."""
+def execution_post(samples: list[dict], checked: set[str] | None = None) -> Post | None:
+    """For a CC order at each size: which venue returned the most, net of network fees, how often.
+    Samples from ``EXEC_SINCE`` on; with ``checked``, a sample a venue outside it won is not counted."""
+    samples = [s for s in samples if s["t"] >= EXEC_SINCE]
     if len(samples) < MIN_EXEC_HOURS:
         return None
     wins: dict[int, Counter] = defaultdict(Counter)
     edges: dict[int, list[float]] = defaultdict(list)
     for s in samples:
         for pair, _side, size, _best, _edge, best_net, edge_net in s["rows"]:
-            if pair == EXEC_PAIR and size in EXEC_SIZES and best_net:
+            if pair == EXEC_PAIR and size in EXEC_SIZES and best_net and (checked is None or best_net in checked):
                 wins[size][best_net] += 1
                 edges[size].append(edge_net)
     if not wins:

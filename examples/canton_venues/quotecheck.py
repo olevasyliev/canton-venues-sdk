@@ -1,5 +1,5 @@
 """Quote check: what our pool math says an AMM returns, against what the venue's own quote engine says,
-at the same minute. Every three hours (canton-venues-quotecheck.timer).
+at the same minute. Every hour (canton-venues-quotecheck.timer): Cantex's fees move 25% within an hour.
 
 - Tradecraft quotes without a key (``/quoteForFixedInput``).
 - Cantex quotes through its SDK with our account's keys (CANTEX_OPERATOR_KEY, CANTEX_TRADING_KEY from

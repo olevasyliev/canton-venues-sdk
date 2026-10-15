@@ -315,12 +315,12 @@ SWAP_COST_CC = Decimal("1.5")
 # "assumed". Only a measured or documented fee can carry a best-price claim; an assumed one fills the
 # net figures and is shown as an assumption. Replace an entry when it is measured from our own trades.
 NETWORK_FEE: dict[str, tuple[str, Decimal, Decimal, Decimal, str]] = {
-    # Cantex's own quotes on all 24 CC pairs, 2026-10-15: 1.18 CC (HANDL, HECTO, MOD, TRKX*) to 3.49 CC
-    # (CC/USDCx), median about 1.36, the same at any size and both ways, moving ~10% within an hour
-    # (0.86 measured 03.10 is out of date). Each pair's own fee comes from quotecheck.py every three
-    # hours (``PAIR_FEE_CC``); this is the stand-in when that record is stale, with headroom around what
-    # was seen. A best-price claim must survive the whole range.
-    "cantex": ("cc", Decimal("1.36"), Decimal("1.10"), Decimal("3.60"), "measured"),
+    # Cantex's own quotes on all 24 CC pairs, 2026-10-15, three reads from 11:20 to 12:44 UTC: 0.88 CC
+    # (HANDL, HECTO, MOD, TRKX*) to 3.49 CC (CC/USDCx), the same at any size and both ways, moving 25%
+    # within an hour (CC/USDCx 3.42, 3.49, 3.13; 0.86 flat, measured 03.10, is out of date). Each pair's
+    # own fee comes from quotecheck.py every hour (``PAIR_FEE_CC``); this is the stand-in when that
+    # record is stale, with headroom around what was seen. A best-price claim must survive the range.
+    "cantex": ("cc", Decimal("1.36"), Decimal("0.85"), Decimal("3.60"), "measured"),
     # docs.oneswap.cc: "typically around $1.5-2 at recent network prices"
     "oneswap": ("usd", Decimal("1.75"), Decimal("1.5"), Decimal("2.0"), "documented"),
     # docs.tradecraft.fi/fees-and-pricing "Gas: $0.10" (illustrative); high end: its DAR guide sizes an

@@ -962,7 +962,7 @@ function checkNote() {
   const ok = ["tradecraft", "cantex"].map((v) => [v, q.venues[v]]).filter(([, s]) => s && s.checked);
   if (!ok.length) return "";
   const age = (Date.now() / 1000 - q.t) / 3600;
-  if (age > 12) return "";
+  if (age > 3) return "";  // hourly check: older than three hours is not a check any more
   const parts = ok.map(([v, s]) => `${V[v]} ${s.agree} of ${s.checked}`);
   const gap = Math.max(...ok.map(([, s]) => s.max_gap_bp || 0));
   return ` Checked against the venues' own quotes at ${utcHM(q.t)}: ${parts.join(", ")} trades agree${gap < 0.01 ? " to the last digit" : `, the largest gap ${gap.toFixed(2)} bp`} (<a href="${API}quotecheck.json">every trade</a>).`;

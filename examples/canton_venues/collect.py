@@ -72,8 +72,8 @@ VOLUME_MAX_AGE_S = 3600
 LLAMA_MAX_AGE_S = 6 * 3600
 # Temple's row reads "down" once its keyless settled volume has not been read for this long
 TEMPLE_MAX_AGE_S = 45 * 60
-# Cantex's network fee per pair from the quote check (quotecheck.py, every 3 h) stands this long
-PAIR_FEE_MAX_AGE_S = 12 * 3600
+# Cantex's network fee per pair from the quote check (quotecheck.py, hourly) stands this long
+PAIR_FEE_MAX_AGE_S = 3 * 3600
 HISTORY_KEEP_S = 8 * 24 * 3600
 DESK_KEEP = 400
 LLAMA = "https://api.llama.fi"
@@ -1261,9 +1261,13 @@ class Collector:
             state.pop(k, None)
         if "channel" not in state:  # the channel's first run: what is already loud is not news
             state["channel"] = {"active": sorted(a.key for a in current if a.loud)}
-        # price claims stay on the site while channel.PRICE_CLAIMS_PAUSED (every loud alert is one: a
-        # spread, a peg, a premium, an hourly move); the channel's own record does not advance either
-        loud = [] if channel.PRICE_CLAIMS_PAUSED else al.channel(state.setdefault("channel", {}), current, now)
+        # every loud alert is a price claim: none in the channel without a passing quote check, and a
+        # spread only between two venues whose prices are checked (channel.checked_venues)
+        checked = channel.checked_venues(load_json(self.api / "quotecheck.json", None), now)
+        allowed = {f"route:{r['token']}:{r['buy_on']}" for r in scan
+                   if r.get("clears") and {r["buy_on"], r["sell_on"]} <= checked}
+        loud = al.channel(state.setdefault("channel", {}),
+                          [a for a in current if a.kind != "route" or a.key in allowed], now) if checked else []
         write_json(path, state)  # recorded before sending: a failed send never duplicates
         if loud:
             await self._telegram(al.channel_html(loud))
@@ -1276,7 +1280,8 @@ class Collector:
         if not state:  # first run: start with tomorrow's post, not one at whatever hour this deploys
             write_json(path, {"date": now.date().isoformat(), "posts": []})
             return
-        kind = channel.due(state, now)
+        checked = channel.checked_venues(load_json(self.api / "quotecheck.json", None), now.timestamp())
+        kind = channel.due(state, now, checked)
         if kind is None:
             return
         t = int(now.timestamp())
@@ -1287,9 +1292,9 @@ class Collector:
             elif kind == "venue":
                 card_v = {p.parent.name: int(p.stat().st_mtime) for p in (self.out / "venues").glob("*/card.png")}
                 post, state["venue_turn"] = channel.venue_post(
-                    load_json(self.out / "venues" / "published.json", {}), state.get("venue_turn", 0), card_v)
+                    load_json(self.out / "venues" / "published.json", {}), state.get("venue_turn", 0), card_v, checked)
             elif kind == "execution":
-                post = channel.execution_post(channel.read_exec(self.state / "exec", t))
+                post = channel.execution_post(channel.read_exec(self.state / "exec", t), checked)
             elif kind == "pegs":
                 post = channel.pegs_post(self.history, tokens, {x["key"]: x["symbol"] for x in tokens}, t)
         except Exception:  # noqa: BLE001
