@@ -29,6 +29,15 @@ SITE = "https://cantonvenues.com"
 SEND_HOUR_UTC = 9
 # weekday() -> kind; Saturday and Sunday are left out
 SCHEDULE = {0: "weekly", 1: "venue", 2: "execution", 3: "venue", 4: "pegs"}
+# F 2026-10-15: until our quotes are checked every day against the venues' own quote APIs, the channel
+# says only what a venue's own API confirms (volume, liquidity, depth, counts). No best-price, spread,
+# peg or premium post or alert: the Wednesday execution and Friday pegs posts are skipped, a venue card
+# whose headline is a price claim is passed over, and loud alerts stay on the site. False when that
+# check runs.
+PRICE_CLAIMS_PAUSED = True
+PRICE_KINDS = {"execution", "pegs"}
+CHECKABLE_LEADS = {"spot_volume", "kind_volume", "perp_volume", "tvl", "tokens", "pool_count", "perp_markets",
+                   "largest_pool", "pool_tvl", "token_depth", "unique_token", "pair_volume", "pools", "read"}
 MIN_LIQUIDITY_USD = 100_000   # a stablecoin or token below this is not news for the channel
 PEG_BAND = 0.005
 HELD_SAMPLES = 6              # five-minute readings: a peg gap counts once it holds 30 minutes
@@ -51,7 +60,8 @@ def due(state: dict, now: datetime) -> str | None:
     """Today's kind, once, on the first tick at or after the send hour; None otherwise."""
     if now.hour < SEND_HOUR_UTC or state.get("date") == now.date().isoformat():
         return None
-    return SCHEDULE.get(now.weekday())
+    kind = SCHEDULE.get(now.weekday())
+    return None if PRICE_CLAIMS_PAUSED and kind in PRICE_KINDS else kind
 
 
 def signed(f: float, d: int = 1) -> str:
@@ -113,7 +123,7 @@ def venue_post(published: dict, turn: int, card_v: dict[str, int]) -> tuple[Post
     for i in range(len(order)):
         slug = order[(turn + i) % len(order)]
         head = (heads.get(slug) or {}).get("head")
-        if not head or slug not in card_v:
+        if not head or slug not in card_v or (PRICE_CLAIMS_PAUSED and head.get("rule") not in CHECKABLE_LEADS):
             continue
         name = next(v["name"] for v in VENUES if v["slug"] == slug)
         html = "\n".join([f"🏛 <b>{name}</b>: {head['title']}", head["sub"], "",

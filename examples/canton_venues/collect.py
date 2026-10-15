@@ -1248,7 +1248,9 @@ class Collector:
             state.pop(k, None)
         if "channel" not in state:  # the channel's first run: what is already loud is not news
             state["channel"] = {"active": sorted(a.key for a in current if a.loud)}
-        loud = al.channel(state.setdefault("channel", {}), current, now)
+        # price claims stay on the site while channel.PRICE_CLAIMS_PAUSED (every loud alert is one: a
+        # spread, a peg, a premium, an hourly move); the channel's own record does not advance either
+        loud = [] if channel.PRICE_CLAIMS_PAUSED else al.channel(state.setdefault("channel", {}), current, now)
         write_json(path, state)  # recorded before sending: a failed send never duplicates
         if loud:
             await self._telegram(al.channel_html(loud))

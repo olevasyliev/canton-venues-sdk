@@ -14,7 +14,8 @@ import channel  # noqa: E402
 MON = datetime(2026, 10, 12, 9, 5, tzinfo=UTC)
 
 
-def test_due_follows_the_weekday_once_a_day():
+def test_due_follows_the_weekday_once_a_day(monkeypatch):
+    monkeypatch.setattr(channel, "PRICE_CLAIMS_PAUSED", False)  # the schedule itself
     assert channel.due({}, MON) == "weekly"
     assert channel.due({}, MON.replace(hour=8)) is None
     assert channel.due({"date": "2026-10-12"}, MON) is None
@@ -32,7 +33,8 @@ def test_weekly_post_only_for_the_week_that_just_closed():
     assert channel.weekly_post({**w, "slug": "2026-10-10"}, MON) is None  # a held card is not posted
 
 
-def test_venue_post_takes_turns_and_skips_venues_without_a_card():
+def test_venue_post_takes_turns_and_skips_venues_without_a_card(monkeypatch):
+    monkeypatch.setattr(channel, "PRICE_CLAIMS_PAUSED", False)  # the schedule itself
     pub = {"venues": {"temple": {"head": {"title": "The largest spot venue", "sub": "$29.7M"}},
                       "rocky": {"head": {"title": "The largest perps venue", "sub": "$7.1M"}}}}
     post, turn = channel.venue_post(pub, 0, {"temple": 5, "rocky": 6})
