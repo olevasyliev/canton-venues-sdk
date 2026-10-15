@@ -218,6 +218,14 @@ def _tc_swap(st):
     return swap
 
 
+def _trip_pools(route: dict) -> set:
+    """The markets a scanner round trip trades on: (venue, market) pairs from its fingerprint, or its
+    two venues' pools of the token for a pool-to-pool trip priced in CC."""
+    if route.get("fp"):
+        return {tuple(part.split(":")[:2]) for part in route["fp"].split("|")}
+    return {(route["buy_on"], route["token"]), (route["sell_on"], route["token"])}
+
+
 def _gecko_usd(gecko: dict, gid: str, now: int) -> float | None:
     """A CoinGecko price, or None when it is missing or CoinGecko last updated it more than
     ``model.REFERENCE_MAX_AGE_S`` ago (KAG's stood still for up to 2 h 40 min in October)."""
@@ -1650,7 +1658,14 @@ class Collector:
             # The record restarts at each fix.
             arb = self.desk["arb"] = {"v": 4, "trades": [], "pnl_usd": 0.0, "open": [], "since": now}
         clearing = {f'{r["token"]}:{r["buy_on"]}>{r["sell_on"]}': r for r in scan if r["clears"]}
-        for k, route in clearing.items():
+        # one spread per pool per tick, the best first: four trips selling into the same $6.2K OneSwap
+        # pool were booked at once on 14.10 (42 trips, $49.12 on pools a better trip had already used)
+        used: set = set()
+        for k, route in sorted(clearing.items(), key=lambda kv: -kv[1]["net_usd"]):
+            pools = _trip_pools(route)
+            if pools & used:
+                continue
+            used |= pools
             if k in arb["open"]:
                 continue  # still the same spread as last tick; booked once, when it opened
             arb["pnl_usd"] = round(arb["pnl_usd"] + route["net_usd"], 4)
@@ -1703,7 +1718,13 @@ class Collector:
         return out
 
     def _summary(self, cc_usd, cx_volume, gecko, series, now_ms, books, now, took) -> dict:
-        cc_series = series.get(CC) or self._own_series().get(CC, [])
+        # CC's change from our own samples of the price shown beside it (depth-weighted, Temple's book
+        # in it) once a full day of them follows that step; Cantex's CC-USDCX candles before (its pools
+        # read -13.5% on 2026-10-15 while the price shown fell 12.9%)
+        step = next((x["t"] for x in self.history.get("steps", []) if x["id"] == "cc-price-depth-weighted"), None)
+        own_cc = self._own_series().get(CC, [])
+        cc_series = (own_cc if step is not None and now - step >= 86400 + 3600 and own_cc
+                     else series.get(CC) or own_cc)
         volume_cc, swaps = _num(cx_volume.get("volume_cc")), _num(cx_volume.get("swap_count"))
         llama = self.slow.get("llama")
         return {

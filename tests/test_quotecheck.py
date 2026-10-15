@@ -109,3 +109,51 @@ def test_a_ladder_row_nets_each_venues_pair_fee():
         assert row["out_net"]["cantex"] == pytest.approx(row["out"]["cantex"] - float(D("3.4877") * CC_USD))
     finally:
         m.PAIR_FEE_CC.clear()
+
+
+# --- the smaller findings of the 15.10 re-audit (report A) -------------------------------------------
+
+def test_a_thin_two_swap_route_is_not_counted_at_a_size_above_its_thinnest_pool():
+    # OneSwap's CC to HECTO to tf-usdt counted at $50K through a $49.5K pool (report A, finding 5)
+    import venue_pages as vp
+    from test_venue_pages import data
+    d = data()
+    slug = {v["rows"][0]: v["slug"] for v in vp.VENUES if v.get("rows")}
+
+    def of(f, v, size):
+        return (f.get(slug.get(v, v), {}).get("counts") or {}).get(("cc", size), {}).get("of", 0)
+    pair = next(p for p in d["execution"]["pairs"] if p.get("kind") == "cc"
+                and any(r["size_usd"] == 50_000 and len([o for o in r["out"].values() if o]) >= 2 for r in p["rows"]))
+    row = next(r for r in pair["rows"] if r["size_usd"] == 50_000 and r["side"] == "sell")
+    before = vp.facts(d)
+    v = next(x for x in row["out"] if of(before, x, 50_000) > 0)
+    row["route_usd"] = {v: 49_500.0}
+    assert of(vp.facts(d), v, 50_000) == of(before, v, 50_000) - 1
+
+
+def test_the_channels_feed_lists_only_what_was_sent():
+    import alerts as al
+    state = {"channel": {"active": []}}
+    loud = [al.Alert(f"route:T{i}:cantex", "route", f"t{i}", f"t{i}", True) for i in range(4)]
+    sent = al.channel(state["channel"], loud, 1_792_050_000)
+    assert len(sent) == al.CHANNEL_PER_DAY and len(state["channel"]["feed"]) == al.CHANNEL_PER_DAY
+
+
+def test_the_desk_books_one_spread_per_pool_per_tick(tmp_path):
+    c = collect.Collector(tmp_path / "www")
+    asyncio.run(c.http.aclose())
+    trip = lambda tok, net, sell: {"token": tok, "buy_on": "tradecraft", "sell_on": sell, "net_usd": net,  # noqa: E731
+                                   "clears": True, "size_usd": 1000}
+    scan = [trip("USDCX", 432.0, "temple"), trip("USDCX", 131.0, "cantex"), trip("CBTC", 30.0, "cantex")]
+    c._paper({}, D("0.106"), D("0.106"), scan, 1_792_050_000)
+    booked = [(t["token"], t["sell_on"]) for t in c.desk["arb"]["trades"]]
+    # the second USDCx exit sells into Tradecraft's same CC/USDCx pool: not booked again
+    assert booked == [("USDCX", "temple"), ("CBTC", "cantex")]
+
+
+def test_an_order_book_with_an_empty_side_is_no_market():
+    b = m.BookVenue("rocky", "CBTC-USDCX", (), ((D(80000), D(1)),), D(1), D("0.00025"))
+    with pytest.raises(ValueError):
+        m.book_hop(b, "CBTC", "USDCX")
+    raw = {"cc_usd": "0.1", "pools": {}, "books": {"CBTC": {"CBTC-USDCX": m.book_to_json(b, "USDCX")}}}
+    assert not any(m.venue_hops(raw).values())  # skipped, not a crash in the MCP quote

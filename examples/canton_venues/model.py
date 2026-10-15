@@ -223,9 +223,22 @@ def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> lis
                 "edge_bps": runner_up_bps(filled),
                 "swaps": swaps,
                 "via": {v: via(picks[v][1]) for v in filled if swaps[v] == 2},
+                **_route_usd(picks, filled),
                 **net_of_fees(filled, {v: path_fee_usd(v, picks[v][1], cc_in_usd) for v in filled}, out_usd),
             })
     return rows
+
+
+def _route_usd(picks: dict, filled: dict) -> dict:
+    """``route_usd``: per venue, the thinnest pool its picked route passes through (books unmeasured),
+    so a count of best prices can set aside a two-swap route through a pool smaller than the trade
+    (OneSwap's CC to HECTO to tf-usdt counted at $50K through a $49.5K pool, 2026-10-15)."""
+    out = {}
+    for v in filled:
+        sizes = [h.usd for h in picks[v][1] if h is not None and h.usd is not None]
+        if sizes:
+            out[v] = float(min(sizes))
+    return {"route_usd": out} if out else {}
 
 
 def crossover_usd(rows: list[dict], side: str, a: str, b: str) -> list[float]:
@@ -514,7 +527,10 @@ def pool_hop(p: VenuePool) -> Hop:
 
 
 def book_hop(b: BookVenue, base: str, quote: str) -> Hop:
-    """An order book as a hop from its base to its quote token (keys)."""
+    """An order book as a hop from its base to its quote token (keys); a book with an empty side has no
+    mid and is no market (ValueError, which ``venue_hops`` skips)."""
+    if not b.bids or not b.asks:
+        raise ValueError(f"{b.venue} {b.symbol}: a side of the book is empty")
     def swap(sell_base: bool, amount: Decimal) -> Decimal:
         got = b.sell_base(amount) if sell_base else b.buy_base(amount)
         return got if got is not None else Decimal(0)
@@ -544,7 +560,10 @@ def venue_hops(raw: dict) -> dict[str, list[Hop]]:
             Hop(o["venue"], o["a"], o["b"], rb / ra, FORMULAS[o["formula"]](ra, rb, Decimal(o["fee"])), usd=usd))
     for base, by_market in (raw.get("books") or {}).items():
         for d in by_market.values():
-            hops.setdefault(d["venue"], []).append(book_hop(book_from_json(d), base, d["quote"]))
+            try:
+                hops.setdefault(d["venue"], []).append(book_hop(book_from_json(d), base, d["quote"]))
+            except ValueError:
+                continue
     return hops
 
 
@@ -706,6 +725,7 @@ def usd_ladder(routes: DollarRoutes, price_usd: Decimal, cc_in_usd: Decimal) -> 
             swaps = {v: len(picks[v][1]) for v in filled}
             through = {v: via(picks[v][1]) for v in filled if swaps[v] == 2}
             rows.append({
+                **_route_usd(picks, filled),
                 "side": side, "size_usd": size, "amount_in": float(usd if side == "buy" else qty),
                 "out": {v: (float(o) if o > 0 else None) for v, (o, _) in picks.items()},
                 "cost_bps": {v: float((1 - o / fair) * 10_000) for v, o in filled.items()},

@@ -133,6 +133,8 @@ def channel(state: dict, current: list[Alert], now: int) -> list[Alert]:
     sent = [t for t in state.get("sent", []) if t >= day]
     out = new[:max(0, CHANNEL_PER_DAY - len(sent))]
     state["sent"] = sent + [now] * len(out)
+    if len(out) < len(new):  # past the cap: not posted, so not in the channel's feed (it read as sent)
+        state["feed"] = state["feed"][:len(state["feed"]) - (len(new) - len(out))]
     return out
 
 

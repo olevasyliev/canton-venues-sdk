@@ -74,6 +74,11 @@
       "about": "the paper desk's full record: router and arbitrage simulated on live quotes"
     },
     {
+      "name": "quotecheck",
+      "url": "https://cantonvenues.com/api/v1/quotecheck.json",
+      "about": "the hourly check of our pool math against the venues' own quote engines (Tradecraft, Cantex): every trade compared, the largest gap, and Cantex's network fee per pair"
+    },
+    {
       "name": "weekly",
       "url": "https://cantonvenues.com/api/v1/weekly.json",
       "about": "the rolling last-7-days volume card by venue and day"

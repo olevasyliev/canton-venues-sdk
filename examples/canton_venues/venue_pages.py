@@ -443,17 +443,24 @@ def facts(data: dict) -> dict[str, dict]:
             # each venue's swaps on its best route at this size (two on a route inside the venue)
             swaps = r.get("swaps") or p.get("swaps") or {}
             k = (p["kind"], r["size_usd"])
-            outs = {v: o for v, o in r["out"].items() if o is not None and counted(key, v, markets.get(v))}
-            real = {v: o for v, o in outs.items() if counted(key, v, markets.get(v), max(r["size_usd"],
-                                                                                         MIN_LIQUIDITY_USD))}
+            # a route through a pool under the floor or the trade is thin too (``route_usd``: its thinnest pool)
+            route = r.get("route_usd") or {}
+            outs = {v: o for v, o in r["out"].items() if o is not None and counted(key, v, markets.get(v))
+                    and route.get(v, MIN_LIQUIDITY_USD) >= MIN_LIQUIDITY_USD}
+            floor = max(r["size_usd"], MIN_LIQUIDITY_USD)
+            real = {v: o for v, o in outs.items() if counted(key, v, markets.get(v), floor)
+                    and route.get(v, floor) >= floor}
             if len(real) >= 2:
                 t = tally.setdefault(k, {})
                 for v in real:
                     t.setdefault(v, {"won": 0, "of": 0})["of"] += 1
-                rb = sorted(real, key=real.get, reverse=True)
+                # ranked after each venue's network fee as the grid ranks them (``out_net``); a win must
+                # also survive the conservative fee range (``net_edge_bps``)
+                ranks = ({v: r["out_net"].get(v, 0.0) for v in real} if r.get("out_net") else dict(real))
+                rb = sorted(real, key=ranks.get, reverse=True)
                 net = net_edge_bps(rb[0], rb[1], real[rb[0]], real[rb[1]], r["size_usd"],
                                    swaps.get(rb[0], 1), swaps.get(rb[1], 1), cc_usd)
-                if real[rb[0]] > real[rb[1]] and net is not None and net > 0:
+                if ranks[rb[0]] > ranks[rb[1]] and real[rb[0]] > real[rb[1]] and net is not None and net > 0:
                     t[rb[0]]["won"] += 1
             if len(outs) < 2:
                 continue

@@ -22,6 +22,7 @@ Base URL: https://cantonvenues.com/api/v1/ (opening it returns this endpoint lis
 - [perps.json](https://cantonvenues.com/api/v1/perps.json): perp markets on Rocky and Ekiden: price, basis, funding, spread
 - [history.json](https://cantonvenues.com/api/v1/history.json): eight days of prices and premiums in five-minute steps (large, ~1.2 MB)
 - [desk.json](https://cantonvenues.com/api/v1/desk.json): the paper desk's full record: router and arbitrage simulated on live quotes
+- [quotecheck.json](https://cantonvenues.com/api/v1/quotecheck.json): the hourly check of our pool math against the venues' own quote engines (Tradecraft, Cantex): every trade compared, the largest gap, and Cantex's network fee per pair
 - [weekly.json](https://cantonvenues.com/api/v1/weekly.json): the rolling last-7-days volume card by venue and day
 
 Example: `curl -s https://cantonvenues.com/api/v1/premium.json | jq '.assets[] | {symbol, premium}'`

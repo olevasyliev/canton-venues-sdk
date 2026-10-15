@@ -1082,7 +1082,7 @@ function renderAPI() {
     ["premium", "Canton price against outside markets and pegs"], ["execution", "Every venue at four sizes, both directions; order-book tokens also in dollars"],
     ["scan", "Every cross-venue round trip at its best size, after costs"], ["desk", "The paper desk's full record"],
     ["lp", "Pool liquidity, volume and fee APR"], ["venues", "Every Canton venue: type, 24h volume, what we read"],
-    ["perps", "Perp markets on Rocky and Ekiden: price, basis, funding, spread"], ["spreads", "Daily spread study: how long cross-venue spreads live"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"], ["venue_history", "Per venue: daily volume and our hourly readings"]];
+    ["perps", "Perp markets on Rocky and Ekiden: price, basis, funding, spread"], ["spreads", "Daily spread study: how long cross-venue spreads live"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"], ["venue_history", "Per venue: daily volume and our hourly readings"], ["quotecheck", "Our pool math against the venues' own quotes, hourly, every trade"]];
   const base = location.origin + location.pathname.replace(/[^/]*$/, "") + API;
   $("apilist").innerHTML = eps.map(([n, d]) => `<div><a href="${API}${n}.json">/api/v1/${n}.json</a><span>${d}</span></div>`).join("");
   $("curl").textContent = `curl -s ${base}premium.json | jq '.assets[] | {symbol, premium}'`;
