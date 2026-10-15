@@ -190,3 +190,16 @@ def test_a_fee_by_direction_is_charged_by_what_is_sold():
         assert m.fee_table_json()["oneswap"]["pairs_cc"] == {"CC>USDCX": 11.56, "USDCX>CC": 13.84}
     finally:
         m.PAIR_FEE_CC.clear()
+
+
+def test_the_three_false_peg_alerts_of_14_10_leave_the_feed(tmp_path, monkeypatch):
+    # founder 15.10: USDM1, FRXUSD.B and USDXLR "off their peg" at 16:10-16:26 were our method's, not the market's
+    c = collect.Collector(tmp_path / "www")
+    asyncio.run(c.http.aclose())
+    keep = {"t": 1791990000, "kind": "route", "key": "route:CBTC:cantex", "text": "x"}
+    feed = [{"t": t, "kind": "peg", "key": k, "text": "x"} for t, k in sorted(collect.WITHDRAWN_ALERTS)] + [keep]
+    c.api.mkdir(parents=True, exist_ok=True)
+    (c.api / "alerts.json").write_text(json.dumps({"active": [], "feed": feed, "channel": {"active": [], "feed": []}}))
+    monkeypatch.setattr(collect.al, "evaluate", lambda *a, **k: [])
+    asyncio.run(c._alerts([], [], [], 1_792_070_000))
+    assert json.loads((c.api / "alerts.json").read_text())["feed"] == [keep]

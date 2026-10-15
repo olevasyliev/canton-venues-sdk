@@ -109,6 +109,11 @@ STEPS = [
      "what": "A token in a pool is valued through its own venue's CC/USDCx pool (what it fetches in USDCx "
              "there), not at the market CC price; samples of every token but CC since the CC step are dropped."},
 ]
+# Alerts our own method made, taken out of the site's feed (founder 2026-10-15): (time, key). Between the
+# CC price step and the per-venue valuation fix on 14.10, pool tokens were valued at the market CC price
+# and three stablecoins read off their peg by the pools' gap to Temple's book; none reached the channel.
+WITHDRAWN_ALERTS = {(1791994233, "peg:USDM1:above"), (1791995181, "peg:FRXUSD.B:above"),
+                    (1791995181, "peg:USDXLR:above")}
 MIN_MARKET_USD = m.MIN_MARKET_USD  # a pool under it is no market for a new route (the $1K floor)
 # A pool whose reserves have not moved for STILL_POOL_S has not traded (any swap moves them); once its
 # price is also STILL_POOL_GAP or more off the market, it is marked "not trading" and left out of every
@@ -1263,6 +1268,11 @@ class Collector:
     async def _alerts(self, tokens, premium, scan, now) -> None:
         path = self.api / "alerts.json"
         state = load_json(path, {})
+        for feed in (state.get("feed") or [], (state.get("channel") or {}).get("feed") or []):
+            gone = [x for x in feed if (x.get("t"), x.get("key")) in WITHDRAWN_ALERTS]
+            for x in gone:  # once: the next write no longer has them
+                feed.remove(x)
+                log.info("alert withdrawn from the feed: %s %s", x["t"], x["key"])
         current = al.evaluate(tokens, premium, scan, self._price_hour_ago(now))
         if "active" not in state:  # first run: learn what is already true, send nothing
             state["active"] = sorted({a.key for a in current})
