@@ -558,7 +558,7 @@ def facts(data: dict) -> dict[str, dict]:
                 f["token_rank"], f["token_n"] = _rank({k: len(x) for k, x in tok_rows.items()}, i)
                 top = max(f["tokens"], key=lambda x: x.get("depth_1pct_usd") or 0)
                 f["deepest"] = {"symbol": top["symbol"], "usd": top.get("depth_1pct_usd"),
-                                "market": top.get("market")}
+                                "market": top.get("market"), "books": top.get("books") or 1}
                 f["deep_rank"], f["deep_n"] = _rank(deepest, i)
             if i in pool_rows:
                 f["pools"] = sorted(pool_rows[i], key=lambda x: -x["tvl_usd"])
@@ -756,7 +756,10 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
     for p in [*pools, *unpriced]:
         if p["tvl_usd"] >= MIN_LIQUIDITY_USD and p["tvl_usd"] > biggest.get(p["venue"], {}).get("tvl_usd", 0):
             biggest[p["venue"]] = p
-    if i in biggest and (r := _lead({v: p["tvl_usd"] for v, p in biggest.items()}, i)):
+    # a pool marked not trading (reserves still while its price left the market) still counts against
+    # the others, but no claim of its own venue rests on it
+    if i in biggest and not biggest[i].get("not_trading_since") and \
+            (r := _lead({v: p["tvl_usd"] for v, p in biggest.items()}, i)):
         p = biggest[i]
         where_in = f"its {p['pair']} pool" if p.get("priced", True) else "a CC pool"
         add("largest_pool", "The largest liquidity pool", f"{short_money(p['tvl_usd'])} in {where_in}", r,
@@ -768,13 +771,16 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
         here = t["venues"].get(i)
         depth = {v: x.get("depth_1pct_usd") for v, x in t["venues"].items()
                  if (x.get("liquidity_usd") or 0) >= MIN_LIQUIDITY_USD}
-        if f.get("keyed") and here and here.get("market"):
+        if (f.get("keyed") and here and here.get("market")) or (here and here.get("not_trading_since")):
             continue
         if here and i in depth and (r := _lead(depth, i)) and (best_tok is None or depth[i] > best_tok[1]):
-            best_tok = (t["symbol"], depth[i], "book" if here.get("market") else "pool", r)
+            best_tok = (t["symbol"], depth[i], "book" if here.get("market") else "pool", r, here.get("books") or 1)
     if best_tok:
-        sym, d, what, r = best_tok
-        if what == "book":
+        sym, d, what, r, n = best_tok
+        if what == "book" and n > 1:  # several books summed: never "the deepest book"
+            add("token_depth", f"The deepest {sym} order books", f"{short_money(d)} of book depth within 1% "
+                f"of mid across {n} books", r, d, cap=f"Book depth within 1% of mid, {sym}, {n} books")
+        elif what == "book":
             add("token_depth", f"The deepest {sym} book", f"{short_money(d)} of book depth within 1% of mid", r, d,
                 cap=f"Book depth within 1% of mid, {sym}")
         else:
@@ -789,8 +795,9 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
         for p in live_pools:
             if p.get(field) is not None:
                 by_pair.setdefault(p["pair"], {})[p["venue"]] = p[field]
+        still = {p["pair"] for p in live_pools if p["venue"] == i and p.get("not_trading_since")}
         for pair, vals in by_pair.items():
-            if (r := _lead(vals, i)) and (best is None or vals[i] > best[1]):
+            if pair not in still and (r := _lead(vals, i)) and (best is None or vals[i] > best[1]):
                 best = (pair, vals[i], r)
         return best
 
@@ -803,7 +810,7 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
     only = None
     for t in tokens:
         here = t["venues"].get(i)
-        if not here or (f.get("keyed") and here.get("market")):
+        if not here or (f.get("keyed") and here.get("market")) or here.get("not_trading_since"):
             continue
         liq = token_liquidity(here) or 0
         others = [x for v, x in t["venues"].items() if v != i]
@@ -988,6 +995,13 @@ def market_pair(symbol: str, market: str | None) -> str:
     return market
 
 
+def depth_pair(d: dict) -> str:
+    """What a book-depth figure covers: one book's pair, or the token and how many books are summed
+    (Rocky's "$72M, CBTC/USDCx" was its CBTC/USDCx and CBTC/USDC.B books together, 2026-10-15)."""
+    n = d.get("books") or 1
+    return f"{d['symbol']}, {n} books" if n > 1 else market_pair(d["symbol"], d.get("market"))
+
+
 def _stable(x: dict) -> bool:
     return (x.get("key") or x["symbol"]).upper() in STABLES
 
@@ -1059,7 +1073,7 @@ def stats(f: dict) -> list[dict]:
             out.append({"k": "Largest market", "v": short_money(big[1]), "m": "market", "n": f"{big[0]}, 24h"})
     elif f.get("deepest") and f["deepest"]["usd"]:
         out.append({"k": "Book depth within 1%", "v": short_money(f["deepest"]["usd"]), "m": "depth",
-                    "n": market_pair(f["deepest"]["symbol"], f["deepest"]["market"])})
+                    "n": depth_pair(f["deepest"])})
     if f.get("open_interest"):
         out.append({"k": "Open interest", "v": short_money(f["open_interest"]), "n": "all markets", "m": "oi"})
     if f.get("perp_markets") and len(out) < 4:
@@ -1878,8 +1892,7 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
     elif f.get("tokens"):
         st.append((f"Tokens with {money(MIN_LIQUIDITY_USD)}+ liquidity", str(tf["n"])))
     if f.get("deepest") and not f.get("pools") and not f.get("keyed"):
-        st.append((f"Book depth within 1%, {market_pair(f['deepest']['symbol'], f['deepest']['market'])}",
-                   money(f["deepest"]["usd"])))
+        st.append((f"Book depth within 1%, {depth_pair(f['deepest'])}", money(f["deepest"]["usd"])))
     if f.get("perp_markets"):
         live = sum(1 for m in f["perp_markets"] if (m["turnover_24h_usd"] or 0) >= MIN_PERP_TURNOVER_USD)
         st.append(("Perp markets trading", f"{live} of {len(f['perp_markets'])}"))
@@ -2029,7 +2042,9 @@ def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None)
             liq = money(f["tvl"])
         elif f.get("deepest") and f["deepest"].get("usd") and not f.get("keyed"):
             # an order book's resting dollars are not pool liquidity: labelled, never bare
-            liq = f'{money(f["deepest"]["usd"])}<div class="muted depthnote">book depth within 1%</div>'
+            n = f["deepest"].get("books") or 1
+            liq = (f'{money(f["deepest"]["usd"])}<div class="muted depthnote">book depth within 1%'
+                   f'{f", {n} books" if n > 1 else ""}</div>')
         elif f.get("perp_depth"):
             liq = f'{money(f["perp_depth"]["usd"])}<div class="muted depthnote">perps book depth within 1%</div>'
         else:
@@ -2054,7 +2069,7 @@ def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None)
     body = f"""  <p class="crumbs"><a href="/">Canton Venues</a> / Venues</p>
   <div class="title" style="padding-top:4px"><h1>Canton venues</h1><p>Every Canton DEX with public market data, live. Sorted by 24h volume; click one for its page, its history and a card to share.</p></div>
   <div class="tablewrap"><table class="vt"><thead><tr><th class="l rank">#</th><th class="l">Venue</th><th class="l hide-sm">Type</th><th class="l hide-sm">Strongest fact</th><th>Volume (24h)</th><th class="hide-sm">Perps (24h)</th><th class="hide-sm">Liquidity</th><th class="hide-sm">Open interest</th><th class="hide-sm">Daily volume, 30 days</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
-  <p class="sub" style="margin-top:14px">Strongest fact: a ranking the venue tops by 10% or more, or the trades it prices best after network fees (most of those compared at one size); where it leads nothing, its pools. Markets under {e(money(MIN_LIQUIDITY_USD))} set aside. {e(scope_line(n))}{e(checked)} Volume is spot where the venue has a spot market. Liquidity is pool liquidity; where it says book depth, it is the dollars resting within 1% of mid on the venue's deepest public order book (for perps, among markets trading {e(money(MIN_PERP_TURNOVER_USD))}+ a day). A blank cell: the venue has no such market; n/a: it has one we cannot show.</p>{credit}
+  <p class="sub" style="margin-top:14px">Strongest fact: a ranking the venue tops by 10% or more, or the trades it prices best after network fees (most of those compared at one size); where it leads nothing, its pools. Markets under {e(money(MIN_LIQUIDITY_USD))} set aside. {e(scope_line(n))}{e(checked)} Volume is spot where the venue has a spot market. Liquidity is pool liquidity; where it says book depth, it is the dollars resting within 1% of mid on the venue's deepest public order book, or on all of one token's books where it says how many (for perps, among markets trading {e(money(MIN_PERP_TURNOVER_USD))}+ a day). A blank cell: the venue has no such market; n/a: it has one we cannot show.</p>{credit}
   <section class="block">
     <h2>Coming to Canton Venues</h2>
     <p class="sub">Trading on Canton, no public market data yet: {e(coming)}. Run one of these? <a href="/#contact">Get in touch</a>.</p>

@@ -63,8 +63,9 @@ def test_scanner_and_paper_router_take_the_book():
 def test_execution_names_the_book_on_the_cc_usdcx_pair(tmp_path):
     c = collect.Collector(tmp_path)
     asyncio.run(c.http.aclose())
-    pairs = c._execution({"USDCX": {"tradecraft": pool(), "temple": m.CCBook("temple", "USDCx", book())}}, CC_USD)
+    pairs = c._execution({"USDCX": {"tradecraft": pool(), "temple": m.CCBook("temple", "USDCx", book())}}, CC_USD,
+                         {"USDCX": Decimal(1)})
     assert pairs[0]["venues"] == ["temple", "tradecraft"] and pairs[0]["symbol"] == "USDCx"
     assert pairs[0]["books"] == {"temple": {"market": "CC/USDCx", "fee": 0.0001}}
-    plain = c._execution({"USDCX": {"tradecraft": pool(), "cantex": pool("cantex")}}, CC_USD)
+    plain = c._execution({"USDCX": {"tradecraft": pool(), "cantex": pool("cantex")}}, CC_USD, {"USDCX": Decimal(1)})
     assert "books" not in plain[0]

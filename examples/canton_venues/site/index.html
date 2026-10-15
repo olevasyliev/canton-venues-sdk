@@ -608,7 +608,9 @@ function renderTop() {
     .map((v) => ({ name: v.name, volume_24h: v.volume_24h_usd })).sort((a, b) => b.volume_24h - a.volume_24h);
   const vmax = Math.max(1, ...venues.map((v) => v.volume_24h));
   const prem = (D.premium?.assets || []).filter((a) => a.status === "ok" && a.kind === "reference").sort((a, b) => Math.abs(b.premium) - Math.abs(a.premium)).slice(0, 4);
-  const movers = toks.filter((t) => t.change_24h != null && t.liquidity_usd >= 10000).sort((a, b) => b.change_24h - a.change_24h).slice(0, 4);
+  // a dollar token's 24h "gain" is a peg gap, not a move: stablecoins are left out, as the MCP does
+  const pegKeys = new Set((D.premium?.assets || []).filter((a) => a.kind === "peg").map((a) => a.key));
+  const movers = toks.filter((t) => t.change_24h != null && t.liquidity_usd >= 10000 && !pegKeys.has(t.key)).sort((a, b) => b.change_24h - a.change_24h).slice(0, 4);
   const ccTok = { symbol: "CC", image: s.cc_image };
   $("cards").innerHTML = `
     <div class="card"><h3><span class="name" style="font-size:14px">${icon(ccTok, 20)}Canton Coin</span>${chg(s.cc_change_24h)}</h3>
@@ -702,8 +704,9 @@ function renderPremium() {
     }).join("")}<div class="key">${[...new Set(list.flatMap((a) => Object.keys(a.premium_by_venue || {})))].sort().map((v) => `<span><i style="background:${VC[v]}"></i>${V[v]}</span>`).join("")}</div></div>`;
   };
   const closed = (D.premium?.assets || []).filter((a) => a.status === "spot market closed").map((a) => a.reference.replace(" spot", ""));
+  const quiet = (D.premium?.assets || []).filter((a) => a.status === "traded under $1K in 24h").map((a) => a.symbol);
   $("prem").innerHTML = group("Against an outside market", "BTC, ETH and global CC from CoinGecko; gold and silver against their spot price (Ekiden's index) while the spot market trades." + (closed.length ? ` The ${closed.join(" and ")} spot market is closed now.` : ""), refs) +
-    group("Stablecoins against $1.00", "The Canton price of each dollar token.", pegs);
+    group("Stablecoins against $1.00", "The Canton price of each dollar token." + (quiet.length ? ` Not shown: ${quiet.map(esc).join(", ")}, traded under $1K in 24h, so their price only follows CC.` : ""), pegs);
   bindPremTip();
   const top = refs[0];
   if (top) $("premlead").innerHTML = `Largest gap right now: <b>${esc(top.symbol)}</b> trades <b class="${tone(top.premium)}">${pctAbs(top.premium)} ${top.premium >= 0 ? "above" : "below"}</b> ${esc(top.reference)} on Canton. Positive means Canton pays more, and dots show each venue on its own.`;
@@ -862,7 +865,7 @@ function renderToken() {
       <div class="stat"><div class="k">Venues</div><div class="v">${venues.length}</div></div>
     </div>
     <div class="grid2" style="${prem ? "" : "grid-template-columns:1fr"}">
-      <div class="panel"><h3>Price</h3><p class="sub">${t.history_source === "cantex candles" ? "Hourly, last 7 days, from Cantex candles in USD." : "Our own five-minute samples since tracking began."}</p><div class="tchart" id="tvprice"></div></div>
+      <div class="panel"><h3>Price</h3><p class="sub">${t.history_source === "cantex candles" ? "Hourly, last 7 days, from Cantex candles in USD." : "Hourly, last 7 days, from our own five-minute samples."}</p><div class="tchart" id="tvprice"></div></div>
       ${prem ? `<div class="panel"><h3>Premium to the outside price</h3><p class="sub">Canton price over ${prem.kind === "peg" ? "$1.00" : esc(prem.reference)}, five-minute samples.</p><div class="tchart" id="tvprem"></div></div>` : ""}
     </div>
     <div class="panel" style="margin-top:16px"><h3>By venue</h3>
@@ -872,7 +875,7 @@ function renderToken() {
       ${pools.length ? `<p class="sub" style="margin:14px 0 4px">Pools</p><table class="mini"><tbody>${pools.map((r) => `<tr><td class="l">${esc(r.pair)} <span class="vchip">${V[r.venue]}</span></td><td class="num">${money(r.tvl_usd)} liquidity</td><td class="num">${money(r.volume_24h_usd)} 24h</td><td class="num">${r.fee_apr == null ? "–" : (r.fee_apr * 100).toFixed(1) + "% fee APR"}</td></tr>`).join("")}</tbody></table>` : ""}
       ${cmp ? `<p style="margin:14px 0 0"><a href="#execution" data-compare="${esc(cmp.key)}">Compare ${execVenues(cmp).map((v) => V[v]).join(", ").replace(/, ([^,]*)$/, " and $1")} for ${esc(t.symbol)} →</a></p>` : ""}
     </div>`;
-  const step = t.history_source === "cantex candles" ? 3600000 : 300000, n = (t.spark_7d || []).length, end = D.tokens.t * 1000;
+  const step = 3600000, n = (t.spark_7d || []).length, end = D.tokens.t * 1000;  // hourly points, both sources
   lineChart("tvprice", (t.spark_7d || []).map((v, i) => [end - (n - 1 - i) * step, v]), (v) => price(v));
   if (!prem) { /* no outside market */ }
   else if (!D.history) { $("tvprem").innerHTML = '<p class="empty">Loading history…</p>'; loadHistory(); }
@@ -947,10 +950,18 @@ function renderExecution() {
       ${vs.map((v) => `<td class="num" style="${netBest(r) === v ? `color:${VC[v]};font-weight:700` : ""}"${r.out_net && r.out[v] != null ? ` title="${esc(`Before the network fee: ${outU === "$" ? money(r.out[v]) : amt(r.out[v]) + " " + outU}. Network fee per trade: ${feeNote(v)}${(r.swaps || {})[v] === 2 ? ", paid on each of its two swaps" : ""}`)}"` : ""}>${fmt(netOut(r)[v], outU)}${twoNote(r, v)}</td>`).join("")}
       <td class="num hide-sm">${V[netBest(r)]} +${(netEdge(r) / 100).toFixed(2)}%</td></tr>`).join("") + "</tbody>";
   const bookNote = Object.entries(pair.books || {}).map(([v, b]) => ` ${V[v]} trades it on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "rocky" ? " (assumed: Rocky publishes no fee schedule)" : v === "temple" ? " (Temple's published rate)" : ""}.`).join("");
-  $("execnote").innerHTML = (usd ? `Same dollar amount on every venue, each by its best route on its own markets: one order on a book, a pool against a dollar token, or dollars to CC to ${sym} through two of its own pools. USDC.B counts as a dollar at par while it holds within 1%.`
+  $("execnote").innerHTML = (usd ? `Same dollar amount on every venue, each by its best route on its own markets: one order on a book, a pool against a dollar token, or dollars to CC to ${sym} through two of its own pools. USDC.B counts as USDCx while it holds within 1% of $1.`
     : "Each venue by its best route on its own markets, one swap or two (Temple: CC to USDCx, then USDCx to the token). Pool fees and price impact included.") + bookNote + (usd ? " Cost is measured against the Canton price." : "");
+  $("execnote").innerHTML += stillNote(pair.not_trading);
   const assumed = vs.filter((v) => (D.execution.network_fee || {})[v]?.basis === "assumed").map((v) => V[v]);
   if (D.execution.network_fee) $("execnote").innerHTML += ` Each venue's network fee per trade is taken off too${assumed.length ? `; for ${assumed.length > 1 ? assumed.slice(0, -1).join(", ") + " and " + assumed[assumed.length - 1] : assumed[0]} it is our assumption until we measure it` : ""}. Hover a figure for it before the fee.`;
+}
+// pools whose reserves have stood still while their price left the market: named, left out
+const utcHM = (t) => new Date(t * 1000).toISOString().slice(11, 16) + " UTC";
+function stillNote(nt) {
+  const xs = Object.entries(nt || {});
+  if (!xs.length) return "";
+  return " Not compared: " + xs.map(([v, s]) => `${V[v]}'s ${esc(s.pair)} pool, untouched since ${utcHM(s.since)} and ${(Math.abs(s.gap) * 100).toFixed(1)}% ${s.gap > 0 ? "above" : "below"} the market`).join("; ") + " (no trade has moved it, so its quote is not a price anyone is getting).";
 }
 function drawExec(pair, rows, xs) {
   const st = $("stage"), W = Math.max(280, st.clientWidth), narrow = W < 560, vs = execVenues(pair);
@@ -1048,7 +1059,7 @@ function renderLP() {
   rows.sort((a, b) => (b[k] ?? -1) - (a[k] ?? -1));
   const th = (key, label, cls = "") => `<th class="${cls}"><button class="sort" data-lp="${key}" data-on="${k === key ? 1 : 0}" data-dir="desc">${label}</button></th>`;
   $("lp").innerHTML = `<thead><tr><th class="l">Pool</th><th class="l hide-sm">Venue</th>${th("tvl_usd", "Liquidity")}${th("volume_24h_usd", "Volume (24h)", "hide-sm")}<th class="hide-sm">Fee</th>${th("fee_apr", "Fee APR")}</tr></thead><tbody>` +
-    rows.slice(0, S.lpAll ? rows.length : 10).map((r) => `<tr><td class="l"><b>${esc(r.pair)}</b></td><td class="l hide-sm"><span class="vchip">${V[r.venue]}</span></td>
+    rows.slice(0, S.lpAll ? rows.length : 10).map((r) => `<tr><td class="l"><b>${esc(r.pair)}</b>${r.not_trading_since ? ` <span class="muted" title="Its reserves have not moved since ${utcHM(r.not_trading_since)} while its price left the market: left out of every comparison">not trading since ${utcHM(r.not_trading_since)}</span>` : ""}</td><td class="l hide-sm"><span class="vchip">${V[r.venue]}</span></td>
       <td class="num">${money(r.tvl_usd)}</td><td class="num hide-sm">${money(r.volume_24h_usd)}</td><td class="num hide-sm">${(r.fee * 100).toFixed(2)}%</td>
       <td class="num" style="font-weight:600">${r.fee_apr == null ? "–" : (r.fee_apr * 100).toFixed(1) + "%"}</td></tr>`).join("") + "</tbody>";
   $("lpmore").innerHTML = rows.length > 10 ? `<div class="seg"><button data-lpall="1" aria-pressed="false">${S.lpAll ? "Show top 10" : "Show all " + rows.length + " pools"}</button></div>` : "";

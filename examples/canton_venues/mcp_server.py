@@ -77,10 +77,10 @@ server = MCPServer(
                 "premium to global markets, best execution, spreads, perps, alerts.",
     instructions=(
         "Market data for Canton Network DEXes, refreshed every five minutes. Prices are in USD. "
-        "Tokens are named by symbol (CC is Canton Coin). Use quote() for any trade size: it prices "
-        "the pools from live reserves, routes token-to-token trades through CC, and adds the Temple and Rocky "
-        "order books where the pair trades there. quote() outputs are before network fees; each "
-        "venue's per-trade network fee comes with every quote (network_fees). Nothing here executes a trade."
+        "Tokens are named by symbol (CC is Canton Coin). Use quote() for any trade size: every venue "
+        "is priced on its own markets (pools from live reserves, the Temple and Rocky order books), in one "
+        "swap or two, as the site's best execution compares them; each venue's output comes before and "
+        "after its per-trade network fee (network_fees). Nothing here executes a trade."
     ),
     website_url=SITE,
     version="1.0.0",
@@ -157,71 +157,65 @@ def token(symbol: str) -> dict:
                                            "outside_price_usd": p.get("reference_usd")},
         "pools": pools,
         "price_history_7d": t.get("spark_7d"),
-        "history_step": "1h" if t.get("history_source") == "cantex candles" else "5m",
+        "history_step": "1h",  # own five-minute samples are kept hourly too, so both cover 7 days
         "page": f"{SITE}/#t/{t['key']}",
     }
 
 
 @server.tool(title="Quote a trade on Canton DEXes")
 def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | None = None) -> dict:
-    """Best execution for selling `amount` of token `sell` (or `amount_usd` worth) for token `buy`,
-    priced from live reserves on Cantex and Tradecraft. Shows every venue's output per leg; a
-    token-to-token trade routes through CC with each leg on its best venue. When the pair also trades
-    on an order book (Temple: CC/USDCx, CBTC/USDCx, eXAU/USDCx, eXAG/USDCx; Rocky: CBTC/USDCx, cETH/USDC.B) the same trade is priced there too, and `best`
-    says which wins. Pool fees and price impact are included; network fees are not, and each venue's
-    per-trade fee is returned in `network_fees` (unit, best estimate, range, and whether it is measured,
-    documented or assumed)."""
-    books, cc_usd = _books()
+    """Best execution for selling `amount` of token `sell` (or `amount_usd` worth) for token `buy`, on
+    every venue that can make the trade on its own markets in one or two swaps: an AMM pool (Cantex,
+    Tradecraft, OneSwap, Pool Party), an order book (Temple, Rocky), or two of them in a row on the same
+    venue (Temple: CC to USDCx, then USDCx to CBTC; Pool Party: CC to USDC.B, then USDC.B to CBTC). The
+    same comparison as the site's best execution, at any size. Pool fees, book fees and price impact are
+    included; `after_network_fee` also takes off the venue's per-trade network fee on each swap (the fee
+    table, with which fees are measured, documented or assumed, is in `network_fees`). A pool whose
+    reserves have stood still while its price left the market is no market here (`not_trading`)."""
+    raw = load("pools")
+    cc_usd = Decimal(str(raw["cc_usd"]))
     if (amount is None) == (amount_usd is None):
         raise ToolError("give exactly one of amount or amount_usd")
+    s, b = m.key(sell), m.key(buy)
+    if s == b:
+        raise ToolError("sell and buy are the same token")
+
+    def usd(k: str, name: str) -> Decimal | None:
+        px = cc_usd if k == m.CC else (_token_row(name) or {}).get("price_usd")
+        return Decimal(str(px)) if px else None
+
     if amount is None:
-        price = cc_usd if m.key(sell) == m.CC else (_token_row(sell) or {}).get("price_usd")
+        price = usd(s, sell)
         if not price:
-            raise ToolError(f"no USD price for {sell!r}")
-        amount = amount_usd / price
-    try:
-        r = m.route(books, sell, buy, Decimal(str(amount)))
-    except ValueError as exc:
-        raise ToolError(f"{exc}; call list_tokens() for symbols") from exc
+            raise ToolError(f"no USD price for {sell!r}; call list_tokens() for symbols")
+        amount = float(Decimal(str(amount_usd)) / price)
     names = {t["key"]: t["symbol"] for t in load("tokens")["tokens"]} | {m.CC: "CC"}
-
-    def leg(L):
-        name = names
-        outs = {v: _r(o, 10) for v, o in L["all"].items()}
-        worst = min(L["all"].values())
-        return {"sell": name.get(L["sell"], L["sell"]), "buy": name.get(L["buy"], L["buy"]),
-                "amount_in": _r(L["amount_in"], 10), "best_venue": L["venue"], "amount_out": _r(L["out"], 10),
-                "output_by_venue": outs,
-                "edge_over_worst": _r(L["out"] / worst - 1, 6) if worst > 0 and len(outs) > 1 else None}
-
-    out = {"sell": names.get(r["sell"], r["sell"]), "buy": names.get(r["buy"], r["buy"]), "amount_in": _r(r["amount_in"], 10),
-           "amount_out": _r(r["amount_out"], 10), "legs": [leg(L) for L in r["legs"]],
-           "as_of": load("pools")["t"], "network_fees": {"included": False, "per_trade": m.fee_table_json()}}
-    book = _book_quote(m.key(sell), m.key(buy), Decimal(str(amount)))
-    if book:
-        out["order_book"] = book
-        out["best"] = (f"{book['venue']} order book" if book["amount_out"] and book["amount_out"] > out["amount_out"]
-                       else "pools")
-    return out
-
-
-def _book_quote(sell: str, buy: str, amount: Decimal) -> dict | None:
-    """The same trade as one order on an order book, when one side is the book's base and the other
-    its dollar quote token (Rocky CBTC/USDCx, cETH/USDC.B)."""
-    found = []
-    for base, by_venue in (load("pools").get("books") or {}).items():
-        for d in by_venue.values():
-            if {sell, buy} != {base, d["quote"]}:
-                continue
-            b = m.book_from_json(d)
-            got = b.sell_base(amount) if sell == base else b.buy_base(amount)
-            found.append({"venue": d["venue"], "market": d["symbol"], "amount_out": _r(got, 10),
-                          "taker_fee": d["fee"]})
-    if not found:
-        return None
-    best = max(found, key=lambda x: x["amount_out"] or 0)
-    return best | {"all_books": found,
-                   "note": "one order, walked through the book's resting levels; null means the book is too thin"}
+    out_usd = usd(b, buy)
+    by_venue = {}
+    for v, hops in sorted(m.venue_hops(raw).items()):
+        paths = m.venue_paths(hops, s, b, m.MIN_MARKET_USD)
+        if not paths:
+            continue
+        fee = m.network_fee_usd(v, cc_usd) / out_usd if out_usd else Decimal(0)
+        got, path = m.Route(v, names.get(b, b), s, b, tuple(paths)).best(True, Decimal(str(amount)), fee)
+        if got <= 0:
+            by_venue[v] = {"amount_out": None, "note": "too thin for this size"}
+            continue
+        via = m.via(path)
+        by_venue[v] = {"amount_out": _r(got, 10), "swaps": len(path),
+                       **({"via": names.get(via, via)} if via else {}),
+                       "markets": [h.market or f"{names.get(h.a, h.a)}/{names.get(h.b, h.b)} pool" for h in path],
+                       "after_network_fee": _r(got - len(path) * fee, 10) if out_usd else None}
+    if not by_venue:
+        raise ToolError(f"no venue trades {sell!r} for {buy!r} in one or two swaps; call list_tokens() for symbols")
+    filled = {v: q for v, q in by_venue.items() if q["amount_out"]}
+    key = (lambda v: filled[v]["after_network_fee"]) if out_usd else (lambda v: filled[v]["amount_out"])
+    best = max(filled, key=key) if filled else None
+    return {"sell": names.get(s, sell), "buy": names.get(b, buy), "amount_in": _r(amount, 10),
+            "best_venue": best, "amount_out": filled[best]["amount_out"] if best else None,
+            "by_venue": by_venue, "as_of": raw["t"],
+            "not_trading": raw.get("not_trading") or [],
+            "network_fees": {"included": "after_network_fee, per swap", "per_trade": m.fee_table_json()}}
 
 
 @server.tool(title="Canton premium to global prices")
@@ -257,8 +251,10 @@ def alerts(limit: int = 20) -> dict:
 
 @server.tool(title="Liquidity pools")
 def pools(sort_by: str = "tvl", limit: int = 20) -> dict:
-    """AMM pools on Cantex and Tradecraft with liquidity, 24h volume, fee and LP fee APR from the last
-    24 hours of volume. sort_by: tvl, volume or apr."""
+    """CC pools on every AMM (Cantex, Tradecraft, OneSwap, Pool Party) with liquidity, 24h volume where
+    the venue publishes it, fee and LP fee APR from the last 24 hours of volume; a pool whose reserves
+    have stood still while its price left the market carries `not_trading_since`. sort_by: tvl, volume
+    or apr."""
     k = {"tvl": "tvl_usd", "volume": "volume_24h_usd", "apr": "fee_apr"}.get(sort_by)
     if k is None:
         raise ToolError("sort_by must be tvl, volume or apr")

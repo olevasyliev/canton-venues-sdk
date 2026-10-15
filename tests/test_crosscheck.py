@@ -106,6 +106,32 @@ def test_one_message_when_a_direct_figure_is_off_by_more_than_the_limit(monkeypa
     assert cx.send(text) and len(sent) == 1 and b"chat_id=42" in sent[0][1]
 
 
+def test_pools_without_cc_count_in_the_reference_as_on_the_card():
+    # 2026-10-15 07:00: the cards count pools without CC (d578bdf), the reference counted CC pools
+    # only, and the founder got "OneSwap +33%, Pool Party +62%" for a card that was right
+    base = fake_get()
+
+    def get(url, params=None):
+        out = base(url, params)
+        if url.endswith("/tvl"):  # $30K of USDC.B against CBTC: $60K more on the card
+            out["pools"]["CBTC-USDC.B"] = {"CBTC": "0.37", "USDC.B": "30000"}
+        if url == cx.ONESWAP:  # HECTO priced through its CC pool, then its HECTO/cETH pool counts
+            cc = {"symbol": "CC", "id": "Amulet", "admin": "DSO::1220"}
+            out += [{"assetX": cc, "assetY": {"symbol": "HECTO", "id": "HECTO", "admin": "h"},
+                     "reserveX": str(20_000 / CC), "reserveY": "200000"},
+                    {"assetX": {"symbol": "HECTO", "id": "HECTO", "admin": "h"},
+                     "assetY": {"symbol": "cETH", "id": "cETH", "admin": "e"}, "reserveX": "100000", "reserveY": "4"},
+                    {"assetX": {"symbol": "CC", "id": "Amulet", "admin": "fake::1"},  # not CC: left out
+                     "assetY": {"symbol": "USDCx", "id": "USDCx", "admin": "u"}, "reserveX": "1", "reserveY": "50000"}]
+        return out
+
+    pub = published(pool_party={"tvl": 168_000.0 + 60_000}, oneswap={"tvl": 234_000.0 + 40_000 + 20_000})
+    text, rows = cx.run(pub, get, NOW)
+    assert text is None, text
+    ref = {r["venue"]: r["theirs"] for r in rows if r["figure"] == "tvl" and "DefiLlama" not in r["source"]}
+    assert abs(ref["pool-party"] - 228_018) < 1 and abs(ref["oneswap"] - 294_000) < 1
+
+
 def test_defillama_gaps_use_their_own_looser_limit():
     # 20% under DefiLlama's Cantex volume: within LLAMA_GAP, silent
     assert cx.run(published(), fake_get(llama_cantex=4.5e6), NOW)[0] is None

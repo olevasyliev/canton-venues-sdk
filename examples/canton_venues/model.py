@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import statistics
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -194,8 +194,8 @@ def net_of_fees(outs: dict, fee_usd: dict, out_price_usd: Decimal) -> dict:
 def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> list[dict]:
     """What each venue returns at each size, both directions.
 
-    ``mid`` (token per CC) only converts dollar sizes into token amounts, so
-    every venue is asked about exactly the same trade. A venue given as a ``Route`` takes its best
+    ``mid`` (token per CC, at market prices) converts dollar sizes into token amounts, so every venue is
+    asked about exactly the same trade, and is what ``cost_bps`` measures against. A venue given as a ``Route`` takes its best
     path after its network fee per swap; ``swaps`` and ``via`` say which.
     """
     rows = []
@@ -211,7 +211,7 @@ def ladder(pools: dict[str, VenuePool], cc_in_usd: Decimal, mid: Decimal) -> lis
             filled = {v: o for v, o in outs.items() if o > 0}  # a book that runs out returns 0
             best = max(filled, key=filled.get)
             swaps = {v: len(picks[v][1]) for v in filled}
-            fair = amount * mid if side == "sell" else amount / mid  # at the blended mid, before fees
+            fair = amount * mid if side == "sell" else amount / mid  # at the market mid, before fees
             rows.append({
                 "side": side,  # sell = sell CC for the token, buy = buy CC with it
                 "size_usd": size,
@@ -492,6 +492,33 @@ def book_hop(b: BookVenue, base: str, quote: str) -> Hop:
     return Hop(b.venue, base, quote, (b.bids[0][0] + b.asks[0][0]) / 2, swap, b.symbol, b.fee)
 
 
+# a pool of two other tokens holding less than this is no market for a route (the site's $1K floor)
+MIN_MARKET_USD = Decimal(1_000)
+
+
+def venue_hops(raw: dict) -> dict[str, list[Hop]]:
+    """Every venue's markets from pools.json, as the collector's routes see them: its CC pools (each
+    with its liquidity, twice its CC side), its pools of two other tokens and its order books (Temple's
+    CC/USDCx book under CC). A pool listed in ``not_trading`` is no market."""
+    cc_usd = Decimal(str(raw["cc_usd"]))
+    still = {(x["venue"], x["pair"]) for x in raw.get("not_trading") or []}
+    hops: dict[str, list[Hop]] = {}
+    for vs in raw["pools"].values():
+        for v, d in vs.items():
+            p = pool_from_json(d)
+            if (v, f"CC/{p.token}") not in still:
+                hops.setdefault(v, []).append(replace(pool_hop(p), usd=2 * p.cc_reserve * cc_usd))
+    for o in raw.get("other_pools") or []:
+        ra, rb = Decimal(o["ra"]), Decimal(o["rb"])
+        usd = Decimal(str(o["usd"])) if o.get("usd") is not None else None
+        hops.setdefault(o["venue"], []).append(
+            Hop(o["venue"], o["a"], o["b"], rb / ra, FORMULAS[o["formula"]](ra, rb, Decimal(o["fee"])), usd=usd))
+    for base, by_market in (raw.get("books") or {}).items():
+        for d in by_market.values():
+            hops.setdefault(d["venue"], []).append(book_hop(book_from_json(d), base, d["quote"]))
+    return hops
+
+
 def walk(path: tuple, frm: str, amount: Decimal) -> Decimal:
     """What ``amount`` of ``frm`` becomes after every hop of ``path`` in turn."""
     for h in path:
@@ -566,7 +593,7 @@ class DollarRoutes:
     """Buy or sell a token for dollars on each venue, every venue by its best route on its own markets
     (``Route``s from each dollar token it trades): one order on a book, a pool of the token against a
     dollar token, or dollars to CC to the token through two of its own pools. ``dollar`` is what each
-    dollar token counts as (USDCx at its price, USDC.B at par while it holds its peg)."""
+    dollar token counts as (USDCx at its price, USDC.B as USDCx while it holds its peg)."""
 
     def __init__(self, routes: dict[str, list[Route]], dollar: dict[str, Decimal]) -> None:
         self.routes = {v: rs for v, rs in routes.items() if rs}
@@ -590,19 +617,27 @@ class DollarRoutes:
         """The fewest swaps any of its routes takes."""
         return min(len(p) for r in self.routes[venue] for p in r.paths)
 
-    def buy(self, venue: str, usd: Decimal, fee_per_swap: Decimal = Decimal(0)) -> tuple[Decimal, tuple]:
-        """(token received for ``usd`` dollars, path) on its best route after ``fee_per_swap`` tokens."""
+    def buy(self, venue: str, usd: Decimal, fee_per_swap: Decimal = Decimal(0),
+            dollar: str | None = None) -> tuple[Decimal, tuple]:
+        """(token received for ``usd`` dollars, path) on its best route after ``fee_per_swap`` tokens;
+        ``dollar`` keeps to routes paid in that dollar token."""
         best = (Decimal(0), ())
         for r in self.routes.get(venue, []):
+            if dollar is not None and r.frm != dollar:
+                continue
             got = r.best(True, usd / self.dollar[r.frm], fee_per_swap)
             if got[0] - len(got[1]) * fee_per_swap > best[0] - len(best[1]) * fee_per_swap:
                 best = got
         return best
 
-    def sell(self, venue: str, qty: Decimal, fee_per_swap: Decimal = Decimal(0)) -> tuple[Decimal, tuple]:
-        """(dollars received for ``qty`` of the token, path) after ``fee_per_swap`` dollars a swap."""
+    def sell(self, venue: str, qty: Decimal, fee_per_swap: Decimal = Decimal(0),
+             dollar: str | None = None) -> tuple[Decimal, tuple]:
+        """(dollars received for ``qty`` of the token, path) after ``fee_per_swap`` dollars a swap;
+        ``dollar`` keeps to routes that pay out in that dollar token."""
         best = (Decimal(0), ())
         for r in self.routes.get(venue, []):
+            if dollar is not None and r.frm != dollar:
+                continue
             o, p = r.best(False, qty, fee_per_swap / self.dollar[r.frm])
             o *= self.dollar[r.frm]
             if o - len(p) * fee_per_swap > best[0] - len(best[1]) * fee_per_swap:
@@ -647,11 +682,13 @@ def usd_ladder(routes: DollarRoutes, price_usd: Decimal, cc_in_usd: Decimal) -> 
 
 
 def usd_round_trip(routes: DollarRoutes, buy_on: str, sell_on: str, cc_in_usd: Decimal,
-                   lo_usd: float = 10, hi_usd: float = 100_000, steps: int = 60) -> tuple[Decimal, Decimal]:
-    """Dollars in and gross dollar gain at the best size: buy on one venue, sell on the other."""
+                   lo_usd: float = 10, hi_usd: float = 100_000, steps: int = 60,
+                   dollar: str | None = None) -> tuple[Decimal, Decimal]:
+    """Dollars in and gross dollar gain at the best size: buy on one venue, sell on the other, both
+    in ``dollar`` (a trip that ends in another dollar token than it started with is no round trip)."""
     def gain(x: Decimal) -> Decimal:
-        qty = routes.buy(buy_on, x)[0]
-        back = routes.sell(sell_on, qty)[0] if qty else Decimal(0)
+        qty = routes.buy(buy_on, x, dollar=dollar)[0]
+        back = routes.sell(sell_on, qty, dollar=dollar)[0] if qty else Decimal(0)
         return (back - x) if back > 0 else Decimal(-10**12)
 
     grid = [Decimal(lo_usd * (hi_usd / lo_usd) ** (i / (steps - 1))) for i in range(steps)]
@@ -670,7 +707,10 @@ def usd_round_trip(routes: DollarRoutes, buy_on: str, sell_on: str, cc_in_usd: D
 
 
 def usd_scan(token: str, routes: DollarRoutes, cc_in_usd: Decimal) -> list[dict]:
-    """Round trips that touch an order book, in the same shape as ``scan`` rows."""
+    """Round trips that touch an order book, in the same shape as ``scan`` rows, each paid and paid
+    back in one dollar token (``dollar``). Until 2026-10-15 a trip could pay USDCx (at CoinGecko's
+    ~0.9996) and come back in USDC.B (at exactly $1): CBTC from Temple's USDCx book sold on Rocky's
+    USDC.B book "netted" $54.87 on $99,686 in the channel, all of it the two valuations."""
     if not routes.books:
         return []
     found = []
@@ -678,20 +718,27 @@ def usd_scan(token: str, routes: DollarRoutes, cc_in_usd: Decimal) -> list[dict]
         for sell in routes.venues:
             if buy == sell or not ({buy, sell} & set(routes.books)):
                 continue  # pool-to-pool trips are already in ``scan``, priced in CC
-            x, g = usd_round_trip(routes, buy, sell, cc_in_usd)
-            # each venue's best route at that size, every swap paying its venue's network fee
-            qty, p_buy = routes.buy(buy, x)
-            p_sell = routes.sell(sell, qty)[1] if qty > 0 else ()
-            # a side that cannot fill at that size still costs its shortest route (the trip never clears)
-            cost_cc = ((len(p_buy) or routes.min_swaps(buy)) * swap_cost_cc(buy, cc_in_usd)
-                       + (len(p_sell) or routes.min_swaps(sell)) * swap_cost_cc(sell, cc_in_usd))
-            net_usd = g - cost_cc * cc_in_usd
+            trips = []
+            for d in routes.dollar:
+                if not (any(r.frm == d for r in routes.routes[buy]) and any(r.frm == d for r in routes.routes[sell])):
+                    continue
+                x, g = usd_round_trip(routes, buy, sell, cc_in_usd, dollar=d)
+                # each venue's best route at that size, every swap paying its venue's network fee
+                qty, p_buy = routes.buy(buy, x, dollar=d)
+                p_sell = routes.sell(sell, qty, dollar=d)[1] if qty > 0 else ()
+                # a side that cannot fill at that size still costs its shortest route (the trip never clears)
+                cost_cc = ((len(p_buy) or routes.min_swaps(buy)) * swap_cost_cc(buy, cc_in_usd)
+                           + (len(p_sell) or routes.min_swaps(sell)) * swap_cost_cc(sell, cc_in_usd))
+                trips.append((g - cost_cc * cc_in_usd, d, x, g, cost_cc, p_buy, p_sell))
+            if not trips:
+                continue
+            net_usd, d, x, g, cost_cc, p_buy, p_sell = max(trips, key=lambda t: t[0])
             fp = "|".join(h.fingerprint() for h in (*p_buy, *p_sell))
             found.append({
                 "token": token, "buy_on": buy, "sell_on": sell,
                 "size_cc": float(x / cc_in_usd), "size_usd": float(x),
                 "gross_cc": float(g / cc_in_usd), "net_cc": float(net_usd / cc_in_usd),
-                "net_usd": float(net_usd), "cost_cc": float(cost_cc), "via": "usd", "fp": fp,
+                "net_usd": float(net_usd), "cost_cc": float(cost_cc), "via": "usd", "dollar": d, "fp": fp,
                 "clears": net_usd >= MIN_ROUTE_USD,
             })
     return found

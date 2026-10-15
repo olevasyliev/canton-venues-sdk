@@ -105,8 +105,14 @@ STEPS = [
      "what": "A token in a pool is valued through its own venue's CC/USDCx pool (what it fetches in USDCx "
              "there), not at the market CC price; samples of every token but CC since the CC step are dropped."},
 ]
-# a pool of two other tokens holding less than this is no market for a route (the site's $1K floor)
-MIN_MARKET_USD = 1_000
+MIN_MARKET_USD = m.MIN_MARKET_USD  # a pool under it is no market for a new route (the $1K floor)
+# A pool whose reserves have not moved for STILL_POOL_S has not traded (any swap moves them); once its
+# price is also STILL_POOL_GAP or more off the market, it is marked "not trading" and left out of every
+# price, comparison, route, spread and alert, still listed with its reserves. 2026-10-15: CC fell 12.5%
+# overnight and Tradecraft's CC/USDCx pool (4.36M CC) stood still at +6.75%, so the site showed it as
+# the best place to sell CC, a $434 spread and a channel post, with nothing saying nobody traded there.
+STILL_POOL_S = 2 * 3600
+STILL_POOL_GAP = Decimal("0.01")
 # why a CC pool is read but not quoted (lp.json unpriced_pools)
 UNNAMED = "token not named by any venue we price"
 SECOND_POOL = "a second pool for the same token"
@@ -247,6 +253,11 @@ class Collector:
         self.guard = PublishGuard(out / "venues" / "published.json")
         # per-venue daily volume and our hourly readings, for the venue pages' charts (venue_history.py)
         self.vhist = load_json(self.api / "venue_history.json", {})
+        # each pool's reserves as last read and since when they stood still, kept across restarts
+        # ("venue:A/B" -> [reserves, since]); pools marked not trading this tick, by (venue, token key)
+        # for CC pools and on their ``other_pools`` entry for the rest
+        self.pool_still: dict[str, list] = load_json(self.state / "pools_still.json", {})
+        self.still: dict[tuple[str, str], dict] = {}
 
     async def start(self) -> None:
         await self.cantex.connect()
@@ -573,11 +584,93 @@ class Collector:
         Temple's book as a peg gap (+0.5 to +0.75% on 2026-10-14, the pools 54 bp under the book)."""
         return self.cc_at.get(venue, cc_usd) / pool.mid
 
+    # === pools that stopped trading ========================================
+
+    def _still_since(self, books, now: int) -> dict[str, int]:
+        """Every pool read this tick against its reserves at the last read: since when each has stood
+        still. Returns the pools that have stood still for ``STILL_POOL_S`` or more ("venue:A/B" ->
+        since). A pool not read this tick keeps its record; one unseen for a day is forgotten."""
+        seen = {f"{v}:{CC}/{k}": f"{p.cc_reserve}/{p.token_reserve}" for k, pools in books.items()
+                for v, p in pools.items()}
+        seen |= {self._other_key(o): f"{o['ra']}/{o['rb']}" for o in self.other_pools}
+        for key, fp in seen.items():
+            prev = self.pool_still.get(key)
+            since = prev[1] if prev and prev[0] == fp else now
+            self.pool_still[key] = [fp, since, now]
+        self.pool_still = {k: v for k, v in self.pool_still.items() if now - v[2] <= 86400}
+        return {k: self.pool_still[k][1] for k in seen if now - self.pool_still[k][1] >= STILL_POOL_S}
+
+    @staticmethod
+    def _other_key(o: dict) -> str:
+        return f"{o['venue']}:{m.key(o['a'])}/{m.key(o['b'])}"
+
+    def _mark_still(self, venue: str, k: str, pair: str, since: int, gap: Decimal, now: int) -> None:
+        self.still[(venue, k)] = {"pair": pair, "since": since, "gap": r(gap, 6)}
+        log.info("%s %s not trading: still since %s, %+.2f%% off the market", venue, pair,
+                 datetime.fromtimestamp(since, UTC).strftime("%H:%M"), float(gap) * 100)
+
+    def _still_cc_markets(self, cc_markets: dict, candidates: dict[str, int], usdcx_usd, now: int) -> dict:
+        """CC/USDCx markets without the pools that stood still while CC moved: each still pool against
+        the CC price of the other markets. With no other market to judge by, nothing is marked."""
+        still = {v: p for v, p in cc_markets.items()
+                 if not isinstance(p, m.CCBook) and f"{v}:{CC}/{USDCX}" in candidates}
+        rest = {v: p for v, p in cc_markets.items() if v not in still}
+        if not still or not rest:
+            return cc_markets
+        ref = m.cc_price_usd(rest, usdcx_usd)
+        out = dict(cc_markets)
+        for v, p in still.items():
+            gap = p.mid * usdcx_usd / ref - 1
+            if abs(gap) >= STILL_POOL_GAP:
+                self._mark_still(v, USDCX, f"CC/{p.token}", candidates[f"{v}:{CC}/{USDCX}"], gap, now)
+                out.pop(v)
+        return out
+
+    def _still_pools(self, books, candidates: dict[str, int], cc_usd, ob, now: int) -> None:
+        """CC pools of other tokens that stood still: each against the token's price on the venues
+        that did not (other pools, order books). A token priced nowhere else cannot be judged."""
+        for k, pools in books.items():
+            if k == USDCX:
+                continue
+            for v, p in pools.items():
+                key = f"{v}:{CC}/{k}"
+                if key not in candidates:
+                    continue
+                quotes = [(self._venue_usd(w, q, cc_usd), m.amm_depth_usd(q, cc_usd)) for w, q in pools.items()
+                          if w != v and f"{w}:{CC}/{k}" not in candidates]
+                quotes += [(Decimal(str(i["price_usd"])), Decimal(str(i["depth_usd"]))) for i in ob.get(k, {}).values()]
+                ref = m.weighted_usd(quotes)
+                if ref:
+                    gap = self._venue_usd(v, p, cc_usd) / ref - 1
+                    if abs(gap) >= STILL_POOL_GAP:
+                        self._mark_still(v, k, f"CC/{p.token}", candidates[key], gap, now)
+
+    def _still_others(self, candidates: dict[str, int], prices, now: int) -> None:
+        """Pools of two other tokens that stood still while their price ratio left the market's."""
+        for o in self.other_pools:
+            key, a, b = self._other_key(o), m.key(o["a"]), m.key(o["b"])
+            if key in candidates and prices.get(a) and prices.get(b) and o["ra"] > 0:
+                gap = (o["rb"] / o["ra"]) / (prices[a] / prices[b]) - 1
+                if abs(gap) >= STILL_POOL_GAP:
+                    o["still"] = {"pair": f"{o['a']}/{o['b']}", "since": candidates[key], "gap": r(gap, 6)}
+                    log.info("%s %s/%s not trading: still since %s, %+.2f%% off the market", o["venue"],
+                             o["a"], o["b"], datetime.fromtimestamp(candidates[key], UTC).strftime("%H:%M"),
+                             float(gap) * 100)
+
+    def _still_json(self) -> list[dict]:
+        """Every pool marked not trading this tick: venue, pair, since when its reserves stood still,
+        and how far its price sat off the market (a fraction)."""
+        rows = [{"venue": v, **info} for (v, _), info in self.still.items()]
+        rows += [{"venue": o["venue"], **o["still"]} for o in self.other_pools if o.get("still")]
+        return sorted(rows, key=lambda x: (x["venue"], x["pair"]))
+
     def _prices(self, books, cc_usd, ob) -> dict[str, Decimal]:
-        """Each token's Canton price across every venue that prices it, weighted by depth."""
+        """Each token's Canton price across every venue that prices it, weighted by depth; a pool marked
+        not trading weighs nothing (unless nothing else prices the token)."""
         out = {}
         for sym, pools in books.items():
-            quotes = [(self._venue_usd(v, p, cc_usd), m.amm_depth_usd(p, cc_usd)) for v, p in pools.items()]
+            quotes = [(self._venue_usd(v, p, cc_usd), m.amm_depth_usd(p, cc_usd)) for v, p in pools.items()
+                      if (v, sym) not in self.still]
             for info in ob.get(sym, {}).values():
                 quotes.append((Decimal(str(info["price_usd"])), Decimal(str(info["depth_usd"]))))
             out[sym] = m.weighted_usd(quotes) or m.token_usd(list(pools.values()), cc_usd)
@@ -685,7 +778,8 @@ class Collector:
                 if st.amm_id in tc_inst and st.reserve_a > 0 and st.reserve_b > 0:
                     a, b = (symbol_of.get(i) or names.get((i.admin, i.id), s)
                             for i, s in zip(tc_inst[st.amm_id], (st.token_a, st.token_b)))
-                    self._other("tradecraft", a, b, st.reserve_a, st.reserve_b, _tc_swap(st))
+                    self._other("tradecraft", a, b, st.reserve_a, st.reserve_b, _tc_swap(st),
+                                formula="tradecraft", fee=st.total_fee)
                 continue
             tok_sym = st.token_b if st.token_a == CC else st.token_a
             cc_res, tok_res = st.reserves_for(CC, tok_sym)
@@ -743,7 +837,8 @@ class Collector:
                 if cc_inst.id not in (p.token_a.id, p.token_b.id):
                     if p.reserve_a > 0 and p.reserve_b > 0:  # a pool of two other tokens
                         self._other(venue, name(p.token_a) or (p.symbol_a or "?")[:8], name(p.token_b) or (p.symbol_b or "?")[:8],
-                                    p.reserve_a, p.reserve_b, p.output, named=bool(name(p.token_a) and name(p.token_b)))
+                                    p.reserve_a, p.reserve_b, p.output, named=bool(name(p.token_a) and name(p.token_b)),
+                                    formula="cp", fee=p.fee)
                     continue
                 cc_is_a = p.token_a.id == cc_inst.id
                 if venue == "oneswap" and (p.token_a if cc_is_a else p.token_b) != cc_inst:
@@ -788,10 +883,12 @@ class Collector:
                 by_key[key] = float(vol["Amulet"]) * float(cc_usd)
         return by_key, total
 
-    def _other(self, venue: str, a: str, b: str, ra, rb, swap, named: bool = True) -> None:
+    def _other(self, venue: str, a: str, b: str, ra, rb, swap, named: bool = True, formula: str = "",
+               fee=Decimal(0)) -> None:
         """A pool of two tokens other than CC: a market for the routes inside its venue (when both
-        tokens are named) and liquidity on its venue (``_other_json``)."""
-        self.other_pools.append({"venue": venue, "a": a, "b": b, "ra": ra, "rb": rb,
+        tokens are named) and liquidity on its venue (``_other_json``). ``formula`` and ``fee`` rebuild
+        its pricing from pools.json (``m.FORMULAS``, ``m.venue_hops``)."""
+        self.other_pools.append({"venue": venue, "a": a, "b": b, "ra": ra, "rb": rb, "formula": formula, "fee": fee,
                                  "hop": m.Hop(venue, m.key(a), m.key(b), rb / ra, swap) if named else None})
 
     @staticmethod
@@ -804,7 +901,8 @@ class Collector:
     def _other_json(self, prices) -> list[dict]:
         """Pools without CC (lp.json other_pools), valued by ``_other_tvl``."""
         rows = [{"venue": p["venue"], "pair": f"{p['a']}/{p['b']}", "reason": "pairs two tokens, not CC",
-                 "tvl_usd": r(self._other_tvl(p, prices), 2)} for p in self.other_pools]
+                 "tvl_usd": r(self._other_tvl(p, prices), 2),
+                 **({"not_trading_since": p["still"]["since"]} if p.get("still") else {})} for p in self.other_pools]
         return sorted(rows, key=lambda x: -(x["tvl_usd"] or 0))
 
     def _unquoted(self, venue: str, token: str, cc_reserve, reason: str) -> None:
@@ -903,6 +1001,7 @@ class Collector:
         lp_share_cx = lp_fees_cc / fees_cc if fees_cc and lp_fees_cc is not None else Decimal("0.9")
         books = self._books(cx_states, tc_states, tc_pools, lp_share_cx)
         await self._reserve_venues(books, cx_states)
+        candidates = self._still_since(books, now)
         usdcx_usd = self._usdcx(gecko)
         stable = books.get(USDCX)
         if not stable:
@@ -915,7 +1014,8 @@ class Collector:
         cc_markets = stable
         if temple_cc_book is not None and temple_cc_book.bids and temple_cc_book.asks:
             cc_markets = {**stable, "temple": m.CCBook("temple", next(iter(stable.values())).token, temple_cc_book)}
-        cmp_books = {**books, USDCX: cc_markets}
+        self.still = {}
+        cc_markets = self._still_cc_markets(cc_markets, candidates, usdcx_usd, now)
         cc_usd = m.cc_price_usd(cc_markets, usdcx_usd)
         self.cc_usd_last = cc_usd
         self.cc_at = {v: p.mid * usdcx_usd for v, p in cc_markets.items()}
@@ -927,7 +1027,12 @@ class Collector:
             for b in v.values():
                 ob_books.setdefault(k, {})[b.symbol] = (b, USDCX)
         perps = await self._perps(gecko, cc_usd, now)
+        self._still_pools(books, candidates, cc_usd, ob, now)
+        # the comparisons leave out every pool marked not trading (its rows still list it)
+        cmp_books = {k: {v: p for v, p in pools.items() if (v, k) not in self.still}
+                     for k, pools in {**books, USDCX: cc_markets}.items()}
         prices = self._prices(books, cc_usd, ob)
+        self._still_others(candidates, prices, now)
         hops = self._hops(books, cc_markets, ob_books, prices)
 
         series = self._usd_series(now_ms, usdcx_usd)
@@ -936,9 +1041,9 @@ class Collector:
         own = self._own_series()
 
         tokens = self._tokens(books, cc_usd, tickers, series, own, now_ms, ob, prices)
-        premium = self._premium(books, cc_usd, gecko, ob, prices, now)
+        premium = self._premium(books, cc_usd, gecko, ob, prices, now, quiet=m.idle(tokens))
         dollar = self._dollar_routes(books, hops, ob_books, prices, usdcx_usd)
-        cc_pairs = self._execution(self._cc_routes(books, hops), cc_usd)
+        cc_pairs = self._execution(self._cc_routes(books, hops), cc_usd, prices)
         # CC/USDCx stays the default view; order-book tokens in dollars come right after it
         execution = cc_pairs[:1] + self._usd_execution(books, dollar, prices, cc_usd) + cc_pairs[1:]
         scan = m.scan({k: v for k, v in cmp_books.items() if len(v) > 1}, cc_usd)
@@ -946,7 +1051,7 @@ class Collector:
             scan += m.usd_scan(k, routes, cc_usd)
         scan.sort(key=lambda x: -x["net_usd"])
         if not self.down:  # the paper desk trades only on a full view of the venues
-            self._paper(cmp_books, cc_usd, scan, now)
+            self._paper(cmp_books, cc_usd, cc_usd / prices[USDCX], scan, now)
         lp = self._lp(books, cc_usd, tickers, tc_states)
         summary = self._summary(cc_usd, cx_volume, gecko, series, now_ms, books, now,
                                 time.monotonic() - started)
@@ -970,6 +1075,7 @@ class Collector:
                                                               "temple")},
                                             "min_usd": float(m.MIN_ROUTE_USD), "routes": scan})
         write_json(self.api / "desk.json", self.desk)
+        write_json(self.state / "pools_still.json", self.pool_still)
         write_json(self.api / "lp.json", {"t": now, "pools": lp, "unpriced_pools": self._unpriced_json(cc_usd),
                                           "other_pools": self._other_json(prices)})
         write_json(self.api / "pools.json", {
@@ -979,7 +1085,16 @@ class Collector:
             # USDCx); CC's own book on Temple sits under CC, so the MCP quote prices CC/USDCx on it too
             "books": {k: {name: m.book_to_json(b, q) for name, (b, q) in vs.items()} for k, vs in ob_books.items()}
             | ({CC: {temple_cc_book.symbol: m.book_to_json(temple_cc_book, USDCX)}}
-               if temple_cc_book is not None else {})})
+               if temple_cc_book is not None else {}),
+            # pools of two other tokens a route can take (named, priced the venue's way: m.venue_hops)
+            "other_pools": [{"venue": o["venue"], "a": m.key(o["a"]), "b": m.key(o["b"]), "ra": str(o["ra"]),
+                             "rb": str(o["rb"]), "formula": o["formula"], "fee": str(o["fee"]),
+                             "usd": r(self._other_tvl(o, prices), 2)}
+                            for o in self.other_pools if o["hop"] is not None and o["formula"] and not o.get("still")
+                            and (self._other_tvl(o, prices) or 0) >= MIN_MARKET_USD],
+            # pools whose reserves stood still while their price left the market: listed above, priced
+            # by nothing, in no route
+            "not_trading": self._still_json()})
         write_json(self.api / "history.json", self.history)
         write_json(self.api / "venues.json", venues)
         write_json(self.api / "perps.json", {"t": now, "markets": perps})
@@ -1158,20 +1273,34 @@ class Collector:
             for v, p in pools.items():
                 venues[v] = {"price_usd": r(self._venue_usd(v, p, cc_usd), 8),
                              "liquidity_usd": r(2 * p.cc_reserve * cc_usd, 2),
-                             "depth_1pct_usd": r(m.amm_depth_usd(p, cc_usd), 2)}
+                             "depth_1pct_usd": r(m.amm_depth_usd(p, cc_usd), 2),
+                             **({"not_trading_since": st["since"]} if (st := self.still.get((v, sym))) else {})}
             vol = vol_cx.get(sym, 0.0) + pp_vol.get(sym, 0.0) + temple_vol.get(sym, 0.0)
             for v, info in ob.get(sym, {}).items():
                 # a book's liquidity is what rests within 1% of mid, not a pool's full reserves
                 venues[v] = {"price_usd": info["price_usd"], "liquidity_usd": info["depth_usd"],
                              "depth_1pct_usd": info["depth_usd"], "market": info["symbol"],
-                             "spread_bps": info["spread_bps"]}
+                             "spread_bps": info["spread_bps"],
+                             # depth summed over several books (Rocky's CBTC: USDCx and USDC.B), the
+                             # deepest named in ``market``: said, so no page names one book for the sum
+                             **({"books": info["books"]} if (info.get("books") or 1) > 1 else {})}
                 vol += info.get("volume_24h_usd") or 0  # a book with no ticker row yet has none
             if "tradecraft" in pools:
                 vol += sum(v for k, v in tc_vol.items()
                            if k.upper().replace("TC ", "").replace(" LP", "") in
                            (f"CC/{sym}", f"{sym}/CC"))
             src = series.get(sym) or own.get(sym) or []
-            spark = [round(v, 8) for t, v in src if t >= now_ms - 7 * 86400_000][-168:]
+            week = [(t, v) for t, v in src if t >= now_ms - 7 * 86400_000]
+            if sym not in series:  # own samples every 5 min: the last of each hour, so 168 points span
+                hourly: dict[int, tuple] = {}  # the week (its last 168 samples were 14 hours)
+                for t, v in week:
+                    hourly[t // 3_600_000] = (t, v)
+                week = list(hourly.values())
+            spark = [round(v, 8) for t, v in week][-168:]
+            traded = None if vol == 0 and "oneswap" in venues else vol > 0
+            # under $1K traded in 24h its price is CC's times a frozen pool ratio: a 24h "move" would be
+            # CC's (USDM1 -6.6%, six $20 pools -7.1% on 2026-10-15, CC -12.5%), so none is published
+            quiet = traded is False or (traded and vol < m.MIN_TRADED_USD)
             out.append({
                 "symbol": pools[next(iter(pools))].token,
                 "key": sym,
@@ -1182,8 +1311,8 @@ class Collector:
                 # False when it traded nowhere in 24h (OneSwap publishes no volume, so a token there is
                 # unknown): its price is then CC's times a frozen ratio, and alerts and the pegs post
                 # skip it (USDM1's pool did not trade for 8 days while CC walked it "off its peg")
-                "traded_24h": None if vol == 0 and "oneswap" in venues else vol > 0,
-                "change_24h": r(m.change(src, now_ms, 86400_000)),
+                "traded_24h": traded,
+                "change_24h": None if quiet else r(m.change(src, now_ms, 86400_000)),
                 "change_7d": r(m.change(src, now_ms, 7 * 86400_000)),
                 "history_source": "cantex candles" if sym in series else "own samples",
                 "venues": venues,
@@ -1191,7 +1320,11 @@ class Collector:
             })
         return sorted(out, key=lambda t: -(t["liquidity_usd"] or 0))
 
-    def _premium(self, books, cc_usd, gecko, ob, prices, now: int | None = None) -> list[dict]:
+    def _premium(self, books, cc_usd, gecko, ob, prices, now: int | None = None,
+                 quiet: set[str] = frozenset()) -> list[dict]:
+        """Each token against its outside price or its $1 peg. A ``quiet`` token (under $1K traded in
+        24h, ``m.idle``) shows no figure: its price only follows CC through a frozen pool ratio (USX and
+        USDM1 read -4% "off their peg" on 2026-10-15 having traded $252 and $132)."""
         rows = []
         h = self.history
         n = len(h["t"])
@@ -1222,6 +1355,10 @@ class Collector:
                 gid, label, ref, kind = None, "1.00 peg", 1.0, "peg"
             else:
                 continue
+            if sym != CC and sym in quiet:
+                rows.append({"key": sym, "symbol": next(iter(pools.values())).token, "kind": kind,
+                             "reference": label, "status": "traded under $1K in 24h"})
+                continue
             canton = cc_usd if sym == CC else prices[sym]
             if ref is None:
                 rows.append({"key": sym, "kind": kind, "reference": label, "status": missing})
@@ -1230,6 +1367,8 @@ class Collector:
             per_venue = {}
             if pools:
                 for v, p in pools.items():
+                    if (v, sym) in self.still:  # not trading: its price is no Canton price
+                        continue
                     pv = m.premium(self._venue_usd(v, p, cc_usd), Decimal(str(ref)))
                     per_venue[v] = r(pv, 6)
             for v, info in ob.get(sym, {}).items():
@@ -1261,10 +1400,12 @@ class Collector:
         hops: dict[str, list] = {}
         for k, pools in {**books, USDCX: cc_markets}.items():
             for v, p in pools.items():
+                if (v, k) in self.still:  # not trading: no market for any route
+                    continue
                 usd = p.depth_usd() if isinstance(p, m.CCBook) else 2 * p.cc_reserve * self.cc_usd_last
                 hops.setdefault(v, []).append(dataclasses.replace(m.pool_hop(p), usd=usd))
         for p in self.other_pools:
-            if p["hop"] is not None and (tvl := self._other_tvl(p, prices) or 0) >= MIN_MARKET_USD:
+            if p["hop"] is not None and not p.get("still") and (tvl := self._other_tvl(p, prices) or 0) >= MIN_MARKET_USD:
                 hops.setdefault(p["venue"], []).append(dataclasses.replace(p["hop"], usd=tvl))
         for k, bs in ob_books.items():
             for b, quote in bs.values():
@@ -1288,10 +1429,11 @@ class Collector:
 
     def _dollar_routes(self, books, hops, ob_books, prices, usdcx_usd) -> dict:
         """For each token with an order book somewhere: every venue's best route from a dollar token to
-        it on its own markets. USDC.B counts as a dollar at par while it holds within 1% of $1."""
+        it on its own markets. USDC.B counts as USDCx while it holds within 1% of $1: the same dollar,
+        valued alike (at $1 against USDCx at CoinGecko's ~0.9996 it made phantom round trips)."""
         dollar = {USDCX: usdcx_usd}
         if "USDC.B" in prices and abs(prices["USDC.B"] - 1) <= Decimal("0.01"):
-            dollar["USDC.B"] = Decimal(1)
+            dollar["USDC.B"] = usdcx_usd
         out = {}
         for sym in sorted(ob_books):
             label = next(iter(books[sym].values())).token
@@ -1300,13 +1442,16 @@ class Collector:
             out[sym] = m.DollarRoutes(routes, dollar)
         return out
 
-    def _execution(self, routes, cc_usd) -> list[dict]:
-        """A CC pair per token two or more venues can trade with CC, each by its best route."""
+    def _execution(self, routes, cc_usd, prices) -> list[dict]:
+        """A CC pair per token two or more venues can trade with CC, each by its best route. A dollar
+        size becomes token amounts at the market prices of CC and the token (the prices every other
+        figure uses): at the pools' blend by CC reserve, which Temple's book does not weigh in, a
+        "$50K" buy spent 52.2K USDCx and Temple "cost" 4.4% on 2026-10-15, the pools 4.3% over it."""
         out = []
         for sym, pools in routes.items():
             if len(pools) < 2:
                 continue
-            mid = m.blended_mid(list(pools.values()))
+            mid = cc_usd / prices[sym] if prices.get(sym) else m.blended_mid(list(pools.values()))
             rows = m.ladder(pools, cc_usd, mid)
             out.append({
                 "key": sym,
@@ -1314,6 +1459,10 @@ class Collector:
                 "venues": sorted(pools),
                 "symbol": next(iter(pools.values())).token,
                 "mid": {v: r(p.mid, 12) for v, p in pools.items()},
+                # token per CC at market prices: what sizes are converted at and cost_bps is against
+                "market_mid": r(mid, 12),
+                # venues whose pool for this pair is marked not trading: left out of the comparison
+                **({"not_trading": nt} if (nt := {v: st for (v, k), st in self.still.items() if k == sym}) else {}),
                 # a venue that trades this token on an order book (Temple's CC/USDCx, its CBTC/USDCx
                 # after a CC/USDCx order), as a dollar pair names it
                 **({"books": bk} if (bk := {v: {"market": b.market, "fee": float(b.fee)}
@@ -1336,22 +1485,25 @@ class Collector:
                 "symbol": next(iter(books[sym].values())).token,
                 "venues": routes.venues,
                 "books": {v: {"market": h.market, "fee": float(h.fee)} for v, h in routes.books.items()},
+                **({"not_trading": nt} if (nt := {v: st for (v, k), st in self.still.items() if k == sym}) else {}),
                 "rows": rows,
             })
         return out
 
-    def _paper(self, books, cc_usd, scan, now) -> None:
+    def _paper(self, books, cc_usd, mid, scan, now) -> None:
+        """The paper desk: one $1K router order a tick (``mid``: USDCx per CC at the market price) and
+        every clearing spread booked once."""
         router = self.desk["router"]
-        if router.get("v") != 3:
+        if router.get("v") != 4:
             # v1 (to 2026-10-08) picked and scored fills before network fees; v2 nets each venue's
             # fee (model.NETWORK_FEE) first; v3 (2026-10-14) starts after Temple's CC/USDCx book joined
-            # the routing (348 of the 400 v2 fills shown at 15:25 UTC were made without it). The
-            # record restarts at each change.
-            router = self.desk["router"] = {"v": 3, "fills": [], "n": 0, "extra_usd": 0.0, "by_venue": {}}
+            # the routing (348 of the 400 v2 fills shown at 15:25 UTC were made without it); v4
+            # (2026-10-15) sizes a "$1K" buy at the market CC price (v3 spent ~4% more, at the pools'
+            # blend). The record restarts at each change.
+            router = self.desk["router"] = {"v": 4, "fills": [], "n": 0, "extra_usd": 0.0, "by_venue": {}}
         pools = books.get(USDCX, {})
         side = "sell" if router["n"] % 2 == 0 else "buy"
-        fill = m.route_order(pools, side, m.ROUTER_SIZE_USD, cc_usd,
-                             m.blended_mid(list(pools.values()))) if pools else None
+        fill = m.route_order(pools, side, m.ROUTER_SIZE_USD, cc_usd, mid) if pools else None
         if fill:
             fill["t"] = now
             router["n"] += 1
@@ -1362,11 +1514,12 @@ class Collector:
             router.update(m.router_stats(router["fills"]))
 
         arb = self.desk["arb"]
-        if arb.get("v") != 3:
+        if arb.get("v") != 4:
             # v1 re-booked a standing spread whenever either pool moved at all; v2 (to 2026-10-04)
-            # valued Rocky's USDC.B book at the pool premium and booked trips that did not exist.
+            # valued Rocky's USDC.B book at the pool premium and booked trips that did not exist; v3
+            # (to 2026-10-15) paid USDCx and got USDC.B back at par (54 phantom trips, $221.81 booked).
             # The record restarts at each fix.
-            arb = self.desk["arb"] = {"v": 3, "trades": [], "pnl_usd": 0.0, "open": [], "since": now}
+            arb = self.desk["arb"] = {"v": 4, "trades": [], "pnl_usd": 0.0, "open": [], "since": now}
         clearing = {f'{r["token"]}:{r["buy_on"]}>{r["sell_on"]}': r for r in scan if r["clears"]}
         for k, route in clearing.items():
             if k in arb["open"]:
@@ -1402,6 +1555,7 @@ class Collector:
                 vol = (cx_vol.get(sym) if v == "cantex" else tc_vol.get(tc_by_sym.get(sym, ""), None)
                        if v == "tradecraft" else pp_vol.get(sym) if v == "poolparty" else None)
                 rows.append({
+                    **({"not_trading_since": st["since"]} if (st := self.still.get((v, sym))) else {}),
                     "venue": v, "pair": f"CC/{p.token}", "tvl_usd": round(tvl, 2),
                     "volume_24h_usd": r(vol, 2), "fee": r(p.fee, 6),
                     "fee_apr": r(m.fee_apr(vol, float(p.fee), float(p.lp_share), tvl), 6)
@@ -1447,6 +1601,8 @@ class Collector:
             # each outside source's last good read (the watchdog's age limits)
             "optional_down": self._optional_down(now),
             "temple_priced": self.temple_priced,
+            # pools whose reserves stood still while their price left the market: in no comparison
+            "pools_not_trading": self._still_json(),
             **({"temple_error": self.temple_error} if self.temple_error else {}),
             "sources": dict(sorted({**self.sources, **({"llama": llama["t"]} if llama else {})}.items())),
         }

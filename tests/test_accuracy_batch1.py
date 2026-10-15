@@ -94,6 +94,7 @@ def _tick(tmp_path, monkeypatch, optional=None, states=(), cantex=None, gecko=No
         pool_states=states,
         volume={"fees_cc": "10", "lp_fees_cc": "9", "volume_cc": "1000000", "swap_count": "100"},
         tickers=[{"base_currency": "CBTC", "target_currency": "CC", "target_volume": "500000", "base_volume": "1"},
+                 {"base_currency": "eXAG", "target_currency": "CC", "target_volume": "100000", "base_volume": "200"},
                  {"base_currency": "USDM1", "target_currency": "CC", "target_volume": "0", "base_volume": "0"}],
         markets=[{"symbol": "CC-USDCX", "source": "cantex"}, {"symbol": "TRKXRWA-CC", "source": "cantex"}],
         candles={"CC-USDCX": cc_bars, "TRKXRWA-CC": dead},
@@ -156,7 +157,8 @@ def test_a_pool_token_is_valued_through_its_own_venues_usdcx_pool(tick):
     # market CC price (the book's 0.1172) it read 0.68% under its peg, the pools' gap to the book
     usdm1 = next(t for t in tick["tokens"]["tokens"] if t["key"] == "USDM1")
     assert usdm1["price_usd"] == pytest.approx(1.0, abs=2e-4)
-    assert abs(next(a for a in tick["premium"]["assets"] if a["key"] == "USDM1")["premium"]) < 2e-4
+    # untraded in this tick: its peg figure is withheld since 2026-10-15 (test_reaudit_2026_10_15)
+    assert next(a for a in tick["premium"]["assets"] if a["key"] == "USDM1")["status"] == "traded under $1K in 24h"
     cc = next(a for a in tick["premium"]["assets"] if a["key"] == "CC")
     assert set(cc["premium_by_venue"]) == {"cantex", "temple"}  # the gap shows on CC, venue by venue
     assert cc["premium_by_venue"]["cantex"] > cc["premium_by_venue"]["temple"]
@@ -377,8 +379,8 @@ def test_paper_router_restarts_at_v3(tmp_path):
     c = collect.Collector(tmp_path)
     asyncio.run(c.http.aclose())
     c.desk["router"] = {"v": 2, "fills": [{"venue": "cantex"}] * 400, "n": 400, "extra_usd": 9.0, "by_venue": {}}
-    c._paper({}, D("0.12"), [], 1_791_990_000)
-    assert c.desk["router"]["v"] == 3 and c.desk["router"]["fills"] == []
+    c._paper({}, D("0.12"), D("0.12"), [], 1_791_990_000)
+    assert c.desk["router"]["v"] >= 3 and c.desk["router"]["fills"] == []  # v4 since 2026-10-15
 
 
 # --- 10. Cantex's measured network fee keeps its measured range ------------------------------------

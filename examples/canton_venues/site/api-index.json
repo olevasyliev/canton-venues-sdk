@@ -1,27 +1,27 @@
 {
   "name": "Canton Venues open API",
-  "about": "Live, read-only market data for Canton Network trading venues. No key, cross-origin enabled, refreshed every five minutes; every file carries t, the unix time of its snapshot.",
+  "about": "Live, read-only market data for Canton Network trading venues. No key, cross-origin enabled, refreshed every five minutes; every snapshot file carries t, the unix time of its snapshot (alerts and desk are running records; history's t is the list of its sample times).",
   "base": "https://cantonvenues.com/api/v1/",
   "endpoints": [
     {
       "name": "summary",
       "url": "https://cantonvenues.com/api/v1/summary.json",
-      "about": "Canton Coin price, ecosystem figures, how many tokens and venues are priced"
+      "about": "Canton Coin price, ecosystem figures, how many tokens and venues are priced, and the pools marked not trading"
     },
     {
       "name": "tokens",
       "url": "https://cantonvenues.com/api/v1/tokens.json",
-      "about": "every token: price, liquidity, 24h volume, 24h/7d change, the venues it trades on, 7-day sparkline"
+      "about": "every token: price, liquidity, 24h volume, 24h change (none for a token that traded under $1K in 24h), 7d change, the venues it trades on, 7-day hourly sparkline"
     },
     {
       "name": "execution",
       "url": "https://cantonvenues.com/api/v1/execution.json",
-      "about": "best execution: every venue quoted at $100, $1K, $10K and $50K, both directions, net of each venue's network fee (`network_fee` documents the fee per venue and whether it was measured or assumed)"
+      "about": "best execution: every venue quoted at $100, $1K, $10K and $50K, both directions, each by its best route on its own markets (one swap or two), net of each venue's network fee (network_fee documents the fee per venue and whether it was measured or assumed); market_mid is the market price sizes are converted at, not_trading names pools left out"
     },
     {
       "name": "premium",
       "url": "https://cantonvenues.com/api/v1/premium.json",
-      "about": "each asset's Canton price against its outside reference (CoinGecko) or peg, overall and per venue"
+      "about": "each asset's Canton price against its outside reference (CoinGecko; gold and silver spot from Ekiden's index while the spot market trades) or its $1 peg, overall and per venue; a token that traded under $1K in 24h shows no figure"
     },
     {
       "name": "scan",
@@ -56,7 +56,7 @@
     {
       "name": "pools",
       "url": "https://cantonvenues.com/api/v1/pools.json",
-      "about": "raw pool reserves and order-book levels per venue, the inputs every quote is computed from"
+      "about": "raw reserves of every CC pool, the pools of two other tokens a route can take, and order-book levels per venue, the inputs every quote is computed from; not_trading lists pools whose reserves stood still while their price left the market (in no price or comparison)"
     },
     {
       "name": "perps",

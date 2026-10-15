@@ -93,6 +93,36 @@ def _cc_usd(get: Get) -> float:
     return float(get(GECKO, {"ids": "canton-network", "vs_currencies": "usd"})["canton-network"]["usd"])
 
 
+DOLLARS = ("USDCX", "USDC.B")  # counted at $1 here; every other token through the venue's own pools
+
+
+def pools_usd(pools: list[tuple[str, float, str, float]], cc: float) -> float:
+    """A venue's liquidity from its own API: every pool, CC-paired or not, as (token, reserve, token,
+    reserve) with CC named "CC". As on the card: a CC pool is twice its CC side at ``cc``; a pool of
+    two other tokens counts both sides when both are priced, twice the priced side when one is, nothing
+    when neither is (USDCx and USDC.B at $1, any other token at its price in the venue's deepest pool
+    against CC or a dollar). The card has counted pools without CC since 2026-10-14 (d578bdf): checked
+    against CC pools alone, it read OneSwap +33% and Pool Party +62% on 2026-10-15."""
+    price: dict[str, float] = {"CC": cc} | {d: 1.0 for d in DOLLARS}
+    known = dict(price)
+    depth: dict[str, float] = {}
+    for a, ra, b, rb in pools:
+        for tok, rt, other, ro in ((a, ra, b, rb), (b, rb, a, ra)):
+            if tok in known or other not in known or rt <= 0 or ro <= 0:
+                continue
+            usd = ro * known[other]
+            if usd > depth.get(tok, 0):  # the deepest such pool sets the price
+                price[tok], depth[tok] = usd / rt, usd
+    total = 0.0
+    for a, ra, b, rb in pools:
+        if "CC" in (a, b):
+            total += 2 * (ra if a == "CC" else rb) * cc
+            continue
+        sides = [r * price[t] for t, r in ((a, ra), (b, rb)) if t in price]
+        total += sum(sides) if len(sides) == 2 else 2 * sides[0] if sides else 0.0
+    return total
+
+
 def venue_figures(get: Get, now: datetime) -> dict:
     out: dict = {}
 
@@ -122,21 +152,30 @@ def venue_figures(get: Get, now: datetime) -> dict:
         vol = get(f"{POOLPARTY}/volume", {"period": "24h"})
         cc_vol = sum(float((p.get("volume") or {}).get("Amulet", 0)) for p in (vol.get("perPool") or {}).values())
         tvl = get(f"{POOLPARTY}/tvl", None)
-        cc_res = sum(float(r.get("Amulet", 0)) for r in (tvl.get("pools") or {}).values())
+        pools = []
+        for r in (tvl.get("pools") or {}).values():
+            if len(r) == 2:  # {"Amulet": reserve, "USDCx": reserve}: Pool Party names CC "Amulet"
+                (a, ra), (b, rb) = ((("CC" if t == "Amulet" else t.upper()), float(x)) for t, x in r.items())
+                pools.append((a, ra, b, rb))
         src = "Pool Party API at CoinGecko CC"
-        return {("pool-party", "spot_volume"): (cc_vol * cc, src), ("pool-party", "tvl"): (2 * cc_res * cc, src)}
+        return {("pool-party", "spot_volume"): (cc_vol * cc, src), ("pool-party", "tvl"): (pools_usd(pools, cc), src)}
 
     def oneswap():
-        cc_res = 0.0
+        pools = []
         for p in get(ONESWAP, None):
             if not p.get("swapsEnabled", True) or not p.get("visible", True):
                 continue
             acct = p.get("accounting") or {}
+            sides = []
             for side, res in (("assetX", "reserveX"), ("assetY", "reserveY")):
                 a = p[side]
-                if a.get("id") == "Amulet" and str(a.get("admin", "")).startswith("DSO::"):
-                    cc_res += float(acct.get(res, p[res]))
-        return {("oneswap", "tvl"): (2 * cc_res * cc, "OneSwap pools at CoinGecko CC")}
+                if a.get("id") == "Amulet" and not str(a.get("admin", "")).startswith("DSO::"):
+                    break  # an "Amulet" from another issuer is not CC: the card leaves such a pool out
+                sides += ["CC" if a.get("id") == "Amulet" else str(a.get("symbol") or a.get("id")).upper(),
+                          float(acct.get(res, p[res]))]
+            else:
+                pools.append(tuple(sides))
+        return {("oneswap", "tvl"): (pools_usd(pools, cc), "OneSwap pools at CoinGecko CC")}
 
     def rocky():
         vol = sum(float(t.get("quoteVolume") or 0) for t in get(ROCKY_PERP, None))
