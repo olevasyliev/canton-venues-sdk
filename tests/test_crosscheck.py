@@ -27,7 +27,7 @@ def fake_get(fail=(), **values):
     """Outside sources agreeing with ``published()`` unless ``values`` says otherwise."""
     v = {"temple": 34.2e6, "cantex_cc": 3.6e6 / CC, "pp_cc": 2600 / CC, "pp_res": 168_000 / CC / 2,
          "os_res": 234_000 / CC / 2, "rocky": 4.7e6, "ekiden": 286_000.0, "llama_cantex": 4.4e6,
-         "llama_tvl": 2.8e6} | values
+         "llama_tvl": 2.8e6, "llama_rocky": 2.6e6} | values
     calls = []
 
     def get(url, params=None):
@@ -59,7 +59,7 @@ def fake_get(fail=(), **values):
             return {"list": [{"turnover_24h": str(v["ekiden"])}]}
         if url == cx.LLAMA_DEXS:
             return {"protocols": [{"name": "Temple", "total24h": 34.5e6}, {"name": "Cantex", "total24h": v["llama_cantex"]},
-                                  {"name": "Rocky Exchange Spot", "total24h": 2.6e6}, {"name": "Pool Party", "total24h": 2900}]}
+                                  {"name": "Rocky Exchange Spot", "total24h": v["llama_rocky"]}, {"name": "Pool Party", "total24h": 2900}]}
         if url == cx.LLAMA_PROTOCOLS:
             return [{"name": "Cantex", "chainTvls": {"Canton": v["llama_tvl"]}}, {"name": "Pool Party", "chainTvls": {"Canton": 270_000}}]
         raise AssertionError(url)
@@ -133,11 +133,22 @@ def test_pools_without_cc_count_in_the_reference_as_on_the_card():
 
 
 def test_defillama_gaps_use_their_own_looser_limit():
-    # 20% under DefiLlama's Cantex volume: within LLAMA_GAP, silent
-    assert cx.run(published(), fake_get(llama_cantex=4.5e6), NOW)[0] is None
+    # Rocky's spot volume has no keyless source of its own: DefiLlama is its only check
+    # 20% under DefiLlama's: within LLAMA_GAP, silent
+    assert cx.run(published(), fake_get(llama_rocky=3.5e6), NOW)[0] is None
     # 60% under: past LLAMA_GAP, reported
-    text, _ = cx.run(published(), fake_get(llama_cantex=9e6), NOW)
-    assert "cantex spot_volume" in text and "DefiLlama Canton DEX volume" in text and "limit 35%" in text
+    text, _ = cx.run(published(), fake_get(llama_rocky=7e6), NOW)
+    assert "rocky spot_volume" in text and "DefiLlama Canton DEX volume" in text and "limit 35%" in text
+
+
+def test_a_defillama_gap_on_a_figure_the_venues_own_api_confirms_is_not_told():
+    # 16.10 07:00 UTC: Pool Party $2.0K on the card and in its own API, $3.7K on DefiLlama
+    text, rows = cx.run(published(), fake_get(llama_cantex=9e6), NOW)
+    assert text is None, text
+    assert any(r["venue"] == "cantex" and r.get("outranked") for r in rows)
+    # the venue's own figure disagrees too: both are told
+    text, _ = cx.run(published(), fake_get(llama_cantex=9e6, cantex_cc=9e6 / CC), NOW)
+    assert "Cantex /volume" in text and "DefiLlama Canton DEX volume" in text
 
 
 def test_a_failed_source_is_not_a_zero_and_stale_cards_are_reported():

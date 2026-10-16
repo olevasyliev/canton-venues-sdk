@@ -1,5 +1,5 @@
 [Unit]
-Description=Canton Venues quote check: our pool math against Tradecraft's and Cantex's own quotes, Cantex's network fee per pair; one Telegram message only on a gap that holds
+Description=Canton Venues quote check: our pool math against Tradecraft's and Cantex's own quotes, OneSwap's too, network fees per pair; one Telegram message per incident (two failed checks in a row) and one when it clears
 After=network-online.target
 Wants=network-online.target
 

@@ -6,7 +6,9 @@ same figures independently, and compares. Two kinds of source:
 - the venue's own keyless API, read directly here rather than through the collector, priced at
   CoinGecko's CC price rather than ours. Same figure, same 24h window: ``GAP`` applies.
 - DefiLlama's Canton lists (DEX volume per protocol, protocol TVL on Canton). Its windows and token
-  prices are its own (not checked against its docs), so only a gap over ``LLAMA_GAP`` counts.
+  prices are its own (not checked against its docs), so only a gap over ``LLAMA_GAP`` counts, and
+  only where the venue's own API did not confirm the same figure: the venue's record outranks an
+  aggregator's (16.10: Pool Party's $2.0K matched its own API to the dollar, DefiLlama read $3.7K).
 
 The weekly card (weekly.py, ``api/v1/weekly.json``) is checked too, when ``--weekly`` is given: each
 counted venue's seven-day sum against DefiLlama's daily figures for the same days (``LLAMA_GAP``),
@@ -298,7 +300,13 @@ def run(published: dict, get: Get = http_get, now: datetime | None = None,
     weekly.json: {} when the file is missing, None to skip the weekly check."""
     now = now or datetime.now(UTC)
     direct, llama = venue_figures(get, now), llama_figures(get)
-    rows = compare(published, direct, GAP) + compare(published, llama, LLAMA_GAP)
+    own = compare(published, direct, GAP)
+    agreed = {(r["venue"], r["figure"]) for r in own if not r["over"]}
+    outside = compare(published, llama, LLAMA_GAP)
+    for r in outside:  # the venue's own API confirmed the card: DefiLlama's window is not our fault
+        if r["over"] and (r["venue"], r["figure"]) in agreed:
+            r["over"], r["outranked"] = False, True
+    rows = own + outside
     wk = weekly_figures(get, weekly) if weekly else {}
     if wk:  # the card's days come from the venues' own records first: DefiLlama gets its looser limit
         pub = weekly_published(weekly)
@@ -369,7 +377,8 @@ def main() -> None:
     text, rows = run(published, weekly=weekly)
     for r in rows:
         log.info("%-10s %-12s ours %12s  %-34s %12s  %+6.1f%%%s", r["venue"], r["figure"], _usd(r["ours"]),
-                 r["source"], _usd(r["theirs"]), r["gap"] * 100, "  OVER" if r["over"] else "")
+                 r["source"], _usd(r["theirs"]), r["gap"] * 100,
+                 "  OVER" if r["over"] else "  over, the venue's own API agrees" if r.get("outranked") else "")
     if text is None:
         log.info("all %d figures within limits; nothing sent", len(rows))
     elif args.dry_run:

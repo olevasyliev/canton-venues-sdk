@@ -39,7 +39,7 @@ def test_our_math_and_the_venues_quote_agree_and_every_trade_is_recorded():
     rec = qc.summarise(rows, {"cantex": qc.NO_KEYS}, {}, 1)
     assert rec["venues"]["tradecraft"] == {"status": "ok", "checked": 6, "agree": 6, "max_gap_bp": 0.0,
                                            "median_gap_bp": 0.0}
-    assert qc.message(rec) is None  # no keys for Cantex is by setup, not news
+    assert _told(rec, rec) == [None, None]  # no keys for Cantex is by setup, not news
 
 
 def test_a_gap_is_asked_again_and_a_gap_that_holds_is_told():
@@ -55,7 +55,8 @@ def test_a_gap_is_asked_again_and_a_gap_that_holds_is_told():
     rows = _run(read, quote)
     assert state["n"] == 1 + len(rows)  # every failing trade read the pool again before failing
     assert not any(r["ok"] for r in rows) and rows[0]["gap_bp"] == pytest.approx(5.0, abs=0.01)
-    text = qc.message(qc.summarise(rows, {}, {}, 1))
+    rec = qc.summarise(rows, {}, {}, 1)
+    text = _told(rec, rec)[1]
     assert "tradecraft: 6 of 6 trades off the venue's own quote, largest 5.0 bp" in text
 
 
@@ -203,3 +204,84 @@ def test_the_three_false_peg_alerts_of_14_10_leave_the_feed(tmp_path, monkeypatc
     monkeypatch.setattr(collect.al, "evaluate", lambda *a, **k: [])
     asyncio.run(c._alerts([], [], [], 1_792_070_000))
     assert json.loads((c.api / "alerts.json").read_text())["feed"] == [keep]
+
+
+# --- the owner is told once per incident (founder 16.10: no message for one failed check) -----------
+
+def _record(**venues):
+    """One check's record: ``venue="ok"``, ``"gap"`` (1.7 bp on 2 of 72), ``"big"`` (12 bp) or ``"down"``."""
+    rows, failed = [], {}
+    for v, how in venues.items():
+        if how == "down":
+            failed[v] = "VenueRequestError: API error 429"
+            continue
+        gap = {"ok": 0.0, "gap": 1.7, "big": 12.0}[how]
+        rows += [{"venue": v, "trade": "CC->CBTC", "size_usd": 100, "gap_bp": gap if i < 2 else 0.0,
+                  "ok": gap <= 1 or i >= 2} for i in range(72)]
+    return qc.summarise(rows, failed, {}, 1)
+
+
+def _told(*checks):
+    """The messages a run of checks sends, in order (None where nothing is sent)."""
+    prev, out = {}, []
+    for rec in checks:
+        text, prev = qc.alerts(rec, prev)
+        out.append(text)
+    return out
+
+
+def test_one_failed_check_is_not_told_and_two_in_a_row_are_told_once():
+    ok, gap, down = _record(cantex="ok"), _record(cantex="gap"), _record(cantex="down")
+    # 16.10 06:20 and 08:20 UTC: one gap, then a pass: nothing
+    assert _told(ok, gap, ok) == [None, None, None]
+    # a gap, then a 429: told on the second, once, then once when it agrees again
+    sent = _told(gap, down, down, ok, ok)
+    assert sent[0] is None and sent[2] is None and sent[4] is None
+    assert "cantex: not checked (VenueRequestError: API error 429); 2 checks in a row" in sent[1]
+    assert "cantex: agrees again, 72 of 72 trades" in sent[3]
+
+
+def test_a_large_gap_on_one_check_is_not_told_and_unchecked_by_setup_never_counts():
+    # 16.10 08:49 UTC: cETH->CC $100 31.6 bp off, to the digit minutes later (the pool had traded)
+    big = _record(cantex="big")
+    assert _told(big, _record(cantex="ok")) == [None, None]
+    assert "largest 12.0 bp" in _told(big, big)[1]
+    no_keys = qc.summarise([], {"cantex": qc.NO_KEYS, "oneswap": qc.NO_ONESWAP_KEY}, {}, 1)
+    assert _told(no_keys, no_keys, no_keys) == [None, None, None]
+
+
+def test_a_venue_that_does_not_answer_is_asked_again(monkeypatch):
+    monkeypatch.setattr(qc, "RETRY_AFTER_S", 0)
+    calls = []
+
+    async def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("API error 429")
+        return ["rows"]
+    assert asyncio.run(qc._twice("cantex", flaky)) == ["rows"] and len(calls) == 2
+
+    async def down():
+        raise RuntimeError("HTTP 503")
+    with pytest.raises(RuntimeError):
+        asyncio.run(qc._twice("tradecraft", down))
+
+
+def test_the_run_keeps_the_count_between_checks_and_sends_only_on_the_second(tmp_path, monkeypatch):
+    api, state = tmp_path / "api", tmp_path / "state"
+    api.mkdir()
+    state.mkdir()
+    (api / "summary.json").write_text(json.dumps({"cc_usd": "0.106"}))
+    monkeypatch.setattr(qc, "RETRY_AFTER_S", 0)
+    monkeypatch.delenv("CANTEX_OPERATOR_KEY", raising=False)
+    monkeypatch.delenv("ONESWAP_SDK_KEY", raising=False)
+    sent = []
+    monkeypatch.setattr(qc, "send", sent.append)
+
+    async def down(cc_usd):
+        raise RuntimeError("GET /health: HTTP 503: no available server")
+    monkeypatch.setattr(qc, "_tradecraft", down)
+    asyncio.run(qc.run(api, state, dry=False))
+    assert sent == [] and json.loads((state / qc.ALERTS).read_text())["streak"]["tradecraft"] == 1
+    asyncio.run(qc.run(api, state, dry=False))
+    assert len(sent) == 1 and "tradecraft: not checked" in sent[0] and "2 checks in a row" in sent[0]

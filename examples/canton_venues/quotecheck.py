@@ -14,9 +14,18 @@ at the same minute. Every hour (canton-venues-quotecheck.timer): Cantex's fees m
 
 Each CC pool holding $20K or more is asked at $100, $1K and $10K, both ways, and priced by our formula
 (``model.FORMULAS``) on reserves read the same minute. A gap over ``GAP_BP`` is asked again once (a
-pool can trade between the two reads); one that holds is a failure. Written: ``api/v1/quotecheck.json``
-(public: when, what was checked, every gap) and the fees for the collector. ONE Telegram message to the
-owner (the pair contact.py and crosscheck.py use) only when a gap holds or a venue does not answer.
+pool can trade between the two reads); one that holds is a failure. A venue that fails to answer is
+asked again once, ``RETRY_AFTER_S`` later (Cantex's 429 outlasted its SDK's own 1 s and 2 s retries
+twice on 15-16.10, Tradecraft answered 503 once). Written: ``api/v1/quotecheck.json`` (public: when,
+what was checked, every gap) and the fees for the collector.
+
+Telegram to the owner (the pair contact.py and crosscheck.py use), once per incident: a venue failing
+``REPEATS`` checks in a row, and once more when it agrees again (``<state>/quotecheck_alerts.json``
+keeps the count). A single failed check is in the public record and the channel's gate, not in a
+message: of 19 checks from 15.10 14:20 to 16.10 08:20 UTC, five failed, each told hourly: two Cantex
+429s and a Tradecraft 503 (what the second ask is for) and two Cantex gaps of 1.2 and 1.7 bp on 2 of
+72 trades. Size alone is no sign: on 16.10 08:49 cETH->CC $100 was 31.6 bp off and agreed to the
+digit minutes later, the pool having traded; a wrong formula or fee holds on the next check.
 
     python quotecheck.py --api /var/www/canton-venues/api/v1 --state /var/www/canton-venues-state
     python quotecheck.py ... --dry-run      # print, write nothing, send nothing
@@ -46,6 +55,9 @@ SIZES_USD = (100, 1_000, 10_000)
 MIN_POOL_USD = 20_000   # a pool this deep or more is checked (twice its CC side)
 GAP_BP = Decimal(1)     # ours and the venue's agree to the last digit when the math is the same
 MAX_POOLS = 12          # per venue, the deepest first
+REPEATS = 2             # a venue failing this many checks in a row is told
+RETRY_AFTER_S = 60      # a venue that did not answer is asked again this long after
+ALERTS = "quotecheck_alerts.json"
 NO_KEYS = "no Cantex keys on this machine"
 NO_ONESWAP_KEY = "no OneSwap SDK key on this machine"
 ONESWAP = "https://api.oneswap.cc/swapv2"
@@ -236,33 +248,61 @@ def summarise(rows: list[dict], failed: dict[str, str], fees: dict[str, Decimal]
             "venues": venues, "rows": rows}
 
 
-def message(record: dict) -> str | None:
+def _failure(v: str, s: dict, rows: list[dict]) -> str | None:
+    """What failed for venue ``v`` in one check; None when it passed or is unchecked by setup."""
+    if s.get("status") == "gap":
+        bad = [r for r in rows if r["venue"] == v and not r["ok"]]
+        return (f"{v}: {len(bad)} of {s['checked']} trades off the venue's own quote, largest "
+                f"{s['max_gap_bp']:.1f} bp (" + html.escape(", ".join(f"{r['trade']} ${r['size_usd']:,}"
+                                                                    for r in bad[:4])) + ")")
+    if s.get("status") == "not checked" and s.get("why") not in (NO_KEYS, NO_ONESWAP_KEY):  # by setup
+        return f"{v}: not checked ({html.escape(s.get('why', ''))})"
+    return None
+
+
+def alerts(record: dict, prev: dict) -> tuple[str | None, dict]:
+    """The owner's message for this check (None: nothing to tell) and the count for the next one.
+    ``prev`` is the last check's: {"streak": {venue: failed checks in a row}, "told": [venue, ...]}.
+    A venue is told once per incident, when it fails ``REPEATS`` checks in a row, and once more when
+    it agrees again."""
+    streak, told = dict(prev.get("streak") or {}), set(prev.get("told") or [])
     lines = []
     for v, s in record["venues"].items():
         if v in UNCHECKED:
             continue
-        if s.get("status") == "gap":
-            bad = [r for r in record["rows"] if r["venue"] == v and not r["ok"]]
-            lines.append(f"{v}: {len(bad)} of {s['checked']} trades off the venue's own quote, largest "
-                         f"{s['max_gap_bp']:.1f} bp (" + html.escape(", ".join(f"{r['trade']} ${r['size_usd']:,}"
-                                                                             for r in bad[:4])) + ")")
-        elif s.get("status") == "not checked" and s.get("why") not in (NO_KEYS, NO_ONESWAP_KEY):  # by setup
-            lines.append(f"{v}: not checked ({html.escape(s.get('why', ''))})")
-    if not lines:
-        return None
-    return "<b>cantonvenues.com quote check</b>\n" + "\n".join(lines)
+        fail = _failure(v, s, record["rows"])
+        streak[v] = streak.get(v, 0) + 1 if fail else 0
+        if fail and v not in told and streak[v] >= REPEATS:
+            lines.append(f"{fail}; {streak[v]} checks in a row")
+            told.add(v)
+        elif not fail and v in told:
+            told.discard(v)
+            if s.get("status") == "ok":
+                lines.append(f"{v}: agrees again, {s['agree']} of {s['checked']} trades")
+    text = "<b>cantonvenues.com quote check</b>\n" + "\n".join(lines) if lines else None
+    return text, {"streak": streak, "told": sorted(told)}
+
+
+async def _twice(venue: str, ask):
+    """``ask()``, and once more ``RETRY_AFTER_S`` later when it fails (a 429, a 503, a timeout)."""
+    try:
+        return await ask()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("%s: %s; asking again in %d s", venue, f"{type(exc).__name__}: {exc}"[:200], RETRY_AFTER_S)
+    await asyncio.sleep(RETRY_AFTER_S)
+    return await ask()
 
 
 async def run(api: Path, state: Path, dry: bool) -> dict:
     cc_usd = Decimal(str(json.loads((api / "summary.json").read_text())["cc_usd"]))
     rows, failed, fees = [], {}, {}
     try:
-        rows += await _tradecraft(cc_usd)
+        rows += await _twice("tradecraft", lambda: _tradecraft(cc_usd))
     except Exception as exc:  # noqa: BLE001
         failed["tradecraft"] = f"{type(exc).__name__}: {exc}"[:200]
     if os.getenv("CANTEX_OPERATOR_KEY"):
         try:
-            got, fees = await _cantex(cc_usd)
+            got, fees = await _twice("cantex", lambda: _cantex(cc_usd))
             rows += got
         except Exception as exc:  # noqa: BLE001
             failed["cantex"] = f"{type(exc).__name__}: {exc}"[:200]
@@ -271,7 +311,7 @@ async def run(api: Path, state: Path, dry: bool) -> dict:
     os_fees: dict[str, Decimal] = {}
     if key := os.getenv("ONESWAP_SDK_KEY"):
         try:
-            got = await _oneswap(cc_usd, key)
+            got = await _twice("oneswap", lambda: _oneswap(cc_usd, key))
             rows += got
             os_fees = oneswap_fees(got)
         except Exception as exc:  # noqa: BLE001
@@ -286,12 +326,14 @@ async def run(api: Path, state: Path, dry: bool) -> dict:
         log.info("cantex network fee per pair (CC): %s", {t: float(f) for t, f in sorted(fees.items())})
     if dry:
         return record
-    from collect import write_json
+    from collect import load_json, write_json
     write_json(api / "quotecheck.json", record)
     if fees or os_fees:
         write_json(state / "quote_check.json", {"t": now, "cantex_fee_cc": {t: str(f) for t, f in fees.items()},
                                                 "oneswap_fee_cc": {k: str(f) for k, f in os_fees.items()}})
-    if (text := message(record)) is not None:
+    text, count = alerts(record, load_json(state / ALERTS, {}))
+    write_json(state / ALERTS, count)
+    if text is not None:
         send(text)
     return record
 
