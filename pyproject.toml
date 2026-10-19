@@ -21,8 +21,9 @@ dev = [
     "pytest-asyncio",
     "ruff",
 ]
-# the Canton Venues example: its MCP server and the venue share cards
+# the Canton Venues example: its MCP server, the venue share cards, the Arkiv log's signer
 venues = [
+    "eth-account>=0.13,<1",
     "mcp>=2.2,<3",
     "pillow>=10",
 ]

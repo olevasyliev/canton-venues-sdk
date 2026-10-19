@@ -79,6 +79,11 @@
       "about": "the hourly check of our pool math against the venues' own quote engines (Tradecraft, Cantex): every trade compared, the largest gap, and Cantex's network fee per pair"
     },
     {
+      "name": "arkiv",
+      "url": "https://cantonvenues.com/api/v1/arkiv.json",
+      "about": "where the hourly record on Arkiv (Tiramisu testnet) lives: each hour the quote check and the best-execution verdicts are written as readonly entities whose contents cannot be changed afterwards; the creator address, the query to read them, and the latest entity of each kind"
+    },
+    {
       "name": "weekly",
       "url": "https://cantonvenues.com/api/v1/weekly.json",
       "about": "the rolling last-7-days volume card by venue and day"

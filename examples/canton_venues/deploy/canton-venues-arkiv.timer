@@ -1,0 +1,10 @@
+[Unit]
+Description=Write the Canton Venues snapshot to Arkiv every hour, after the quote check
+
+[Timer]
+OnCalendar=*-*-* *:25:00 UTC
+Persistent=false
+Unit=canton-venues-arkiv.service
+
+[Install]
+WantedBy=timers.target

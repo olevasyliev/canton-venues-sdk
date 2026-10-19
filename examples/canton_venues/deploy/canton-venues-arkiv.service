@@ -1,0 +1,15 @@
+[Unit]
+Description=Canton Venues Arkiv log: the quote check and the best-execution verdicts written to Arkiv (Tiramisu testnet) as readonly entities; arkiv.json points readers to them
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
+Environment=PYTHONUNBUFFERED=1
+# ARKIV_PRIVATE_KEY: a testnet-only key that pays gas in testnet GLM (chmod 600)
+EnvironmentFile=-/opt/canton-venues/.env
+ExecStart=/opt/canton-venues/.venv/bin/python arkiv_log.py --api /var/www/canton-venues/api/v1
+TimeoutStartSec=300
+MemoryMax=150M
+CPUQuota=20%
