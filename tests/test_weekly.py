@@ -73,6 +73,21 @@ def test_a_missing_day_or_a_zero_leaves_the_venue_out_and_drops_the_canton_claim
     assert "cantex" not in [v["slug"] for v in wk.week(h, NOW)["venues"]]
 
 
+def test_an_outside_day_equal_to_the_day_before_is_no_figure():
+    # DefiLlama repeated Rocky's 18 Oct 2026 figure for 19 Oct while Rocky's API was down
+    h = hist()
+    pts = h["daily"]["rocky"]["points"]
+    pts[-5][1] = pts[-6][1]
+    w = wk.week(h, NOW)
+    assert "rocky" not in [v["slug"] for v in w["venues"]]
+    assert any(x["slug"] == "rocky" and "2 Oct" in x["why"] for x in w["left_out"])
+    # the venue's own record of the same day stands, and so does a venue's own series that repeats
+    figs, _ = wk.day_figures(h, {"rocky": {str(START + 2 * DAY): {"usd": 1.0}}}, "rocky")
+    assert figs[START + 2 * DAY] == (1.0, "rocky")
+    h["daily"]["tradecraft"]["points"].insert(0, [START, 200_000.0])
+    assert "tradecraft" in [v["slug"] for v in wk.week(h, NOW)["venues"]]
+
+
 def test_no_week_on_week_when_the_week_before_is_not_complete():
     # Rocky absent from DefiLlama for three days the week before (as on 27-29 Sep 2026)
     w = wk.week(hist(skip={"rocky": {START - 3 * DAY, START - 2 * DAY, START - DAY}}), NOW)

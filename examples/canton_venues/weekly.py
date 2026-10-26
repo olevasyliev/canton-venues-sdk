@@ -197,7 +197,13 @@ def day_figures(hist: dict, days_cache: dict, slug: str) -> tuple[dict[int, tupl
     series = (hist.get("daily") or {}).get(slug) or {}
     read = series.get("t") or 0
     source = series.get("source") or "defillama"
-    for t, v in series.get("points") or []:
+    points = {int(t): v for t, v in series.get("points") or []}
+    for t, v in points.items():
+        # an outside record that stopped reading a venue repeats its last day: DefiLlama gave Rocky
+        # $690,821 for both 18 and 19 Oct 2026, while Rocky's API answered nobody, so a day equal to
+        # the one before to the cent is no figure (the venue is then left out, never filled in)
+        if source == "defillama" and v and round(v, 2) == round(points.get(t - DAY) or 0, 2):
+            continue
         if v and v > 0:
             if read >= int(t) + DAY + final_after(source):
                 out[int(t)] = (float(v), source)

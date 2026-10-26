@@ -532,6 +532,12 @@ class Collector:
             for mk in markets:  # volume over every book, a CBTC-quoted one through the CBTC price
                 t, quote, k = tickers.get(mk.symbol), m.key(mk.quote), m.key(mk.base)
                 q_usd = quote_usd.get(quote) or (Decimal(str(out[quote]["price_usd"])) if quote in out else None)
+                if t and not q_usd and quote in m.STABLES and k in out and t.last_price:
+                    # a dollar token we price no Rocky book in (USDM1: CBTC/USDM1 from 23 Oct 2026, $1.4M
+                    # missed that week) counts at $1 while the book's own last price puts it within 1% of
+                    # the peg; its Canton pool price is no guide (USDM1's pool sat untraded for days)
+                    implied = Decimal(str(out[k]["price_usd"])) / t.last_price
+                    q_usd = Decimal(1) if abs(implied - 1) <= Decimal("0.01") else None
                 if not (t and q_usd):
                     continue
                 volume += t.turnover_24h * q_usd
