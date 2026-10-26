@@ -124,7 +124,9 @@ def weekly_post(w: dict | None, now: datetime) -> Post | None:
     lines = [f"📅 <b>{w['label']}</b>, {w['range']}", f"<b>{money(w['total_usd'])}</b>"
              + (f" ({signed(w['change'])} on the week before)" if w.get("change") is not None else "")]
     shown = w.get("shares_shown") or []
-    parts = [f"{v['name']} {s}" for v, s in zip(w["venues"], shown)][:4]
+    # escaped: a share under 0.1% reads "<0.1%", which Telegram's HTML takes for a tag and refuses the post
+    # (26 Oct 2026, Pool Party fourth once Rocky was left out)
+    parts = [html.escape(f"{v['name']} {s}") for v, s in zip(w["venues"], shown)][:4]
     if parts:
         lines.append(", ".join(parts))
     lines += ["", f'🔗 <a href="{SITE}/weekly/{w["slug"]}/">The week, day by day</a>']

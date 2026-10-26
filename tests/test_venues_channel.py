@@ -31,6 +31,8 @@ def test_weekly_post_only_for_the_week_that_just_closed():
     assert post.photo == "https://cantonvenues.com/weekly/2026-10-11/card.png?v=7"
     assert "$262.6M" in post.html and "+5.1%" in post.html and "Temple 79.3%, Cantex 12.3%" in post.html
     assert channel.weekly_post({**w, "slug": "2026-10-10"}, MON) is None  # a held card is not posted
+    tiny = {**w, "shares_shown": ["99.9%", "<0.1%"]}  # Telegram's HTML refuses a bare "<"
+    assert "Cantex &lt;0.1%" in channel.weekly_post(tiny, MON).html
 
 
 def test_venue_post_takes_turns_and_skips_venues_without_a_card():
