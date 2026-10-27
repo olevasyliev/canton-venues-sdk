@@ -76,7 +76,7 @@
     {
       "name": "quotecheck",
       "url": "https://cantonvenues.com/api/v1/quotecheck.json",
-      "about": "the hourly check of our pool math against the venues' own quote engines (Tradecraft, Cantex): every trade compared, the largest gap, and Cantex's network fee per pair"
+      "about": "the hourly check of our pool math against the venues' own quote engines (Tradecraft, Cantex, OneSwap): every trade compared, the largest gap, and Cantex's network fee per pair"
     },
     {
       "name": "arkiv",
@@ -87,6 +87,28 @@
       "name": "weekly",
       "url": "https://cantonvenues.com/api/v1/weekly.json",
       "about": "the rolling last-7-days volume card by venue and day"
+    },
+    {
+      "name": "exit",
+      "url": "https://cantonvenues.com/api/v1/exit.json",
+      "about": "what selling each token for USDCx nets, as a share of its value at our price: a ladder from $1K to $1M per venue and at the best one; the largest sale each venue (and all together) takes within 1%, 2% and 5%, with what limited it (the cost, or the end of a venue's visible order book); the worst share at $10K and $50K since worst_since"
+    },
+    {
+      "name": "volume",
+      "url": "https://cantonvenues.com/api/v1/volume.json",
+      "about": "every venue's daily spot volume for the last 30 closed UTC days, with each day's records side by side (the venue's own day record, our midnight reading of its 24-hour counter, an outside daily record), whether they agree within 5%, and the venue's own trade counts (Temple also per market)"
+    }
+  ],
+  "computed": [
+    {
+      "name": "quote",
+      "url": "https://cantonvenues.com/api/v1/quote?sell=CC&buy=USDCx&amount_usd=25000",
+      "about": "any trade size priced on every venue now, as the MCP quote tool (sell, buy, and amount or amount_usd)"
+    },
+    {
+      "name": "check",
+      "url": "https://cantonvenues.com/api/v1/check?sell=CC&buy=USDCx&amount_in=10000&amount_out=975&time=2026-10-27T21:30:00Z&venue=cantex",
+      "about": "a trade you made, priced again on every venue from the market as we read it at the five-minute ticks either side of its time (record since 27 Oct 2026); the best venue after its network fee and how far your fill fell short of it in bp; venue optional. Nothing is executed or stored"
     }
   ],
   "mcp": {
@@ -102,7 +124,9 @@
       "alerts",
       "pools",
       "venues",
-      "perps"
+      "perps",
+      "exit_cost",
+      "check_trade"
     ]
   },
   "docs": "https://cantonvenues.com/llms.txt",

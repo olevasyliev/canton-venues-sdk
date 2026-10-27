@@ -22,9 +22,16 @@ Base URL: https://cantonvenues.com/api/v1/ (opening it returns this endpoint lis
 - [perps.json](https://cantonvenues.com/api/v1/perps.json): perp markets on Rocky and Ekiden: price, basis, funding, spread
 - [history.json](https://cantonvenues.com/api/v1/history.json): eight days of prices and premiums in five-minute steps (large, ~1.2 MB)
 - [desk.json](https://cantonvenues.com/api/v1/desk.json): the paper desk's full record: router and arbitrage simulated on live quotes
-- [quotecheck.json](https://cantonvenues.com/api/v1/quotecheck.json): the hourly check of our pool math against the venues' own quote engines (Tradecraft, Cantex): every trade compared, the largest gap, and Cantex's network fee per pair
+- [quotecheck.json](https://cantonvenues.com/api/v1/quotecheck.json): the hourly check of our pool math against the venues' own quote engines (Tradecraft, Cantex, OneSwap): every trade compared, the largest gap, and Cantex's network fee per pair
 - [arkiv.json](https://cantonvenues.com/api/v1/arkiv.json): where the hourly record on Arkiv (Tiramisu testnet) lives: the quote check and the best-execution verdicts written each hour as readonly entities whose contents cannot be changed afterwards; the creator address, the query to read them, the latest entity of each kind
 - [weekly.json](https://cantonvenues.com/api/v1/weekly.json): the rolling last-7-days volume card by venue and day
+- [exit.json](https://cantonvenues.com/api/v1/exit.json): what selling each token for USDCx nets, as a share of its value at our price (0.98 = 2% lost to fees and price impact): a ladder from $1K to $1M per venue and at the best one; `capacity_usd`, the largest sale each venue (and `all_venues` together) takes within 1%, 2% and 5%, with `limited_by` saying whether the cost or the end of the venue's visible order book stopped it; `worst`, the lowest share at $10K and $50K since `worst_since`. For lending, vault and risk tools: what collateral sells for on Canton
+- [volume.json](https://cantonvenues.com/api/v1/volume.json): every venue's daily spot volume for the last 30 closed UTC days with each day's records side by side (`venue_day`: the venue's own record of the day; `venue_24h`: our midnight reading of its 24-hour counter; `outside`: an outside daily record), `check` = agree (within 5%), differ or single, and the venue's own trade counts (Temple also per market)
+
+Computed on request (plain GET, JSON, no key; errors come back as `{"error": ...}` with HTTP 400):
+
+- [/api/v1/quote](https://cantonvenues.com/api/v1/quote?sell=CC&buy=USDCx&amount_usd=25000)`?sell=&buy=&amount=` or `&amount_usd=`: any trade size priced on every venue now (the MCP quote tool)
+- `/api/v1/check?sell=&buy=&amount_in=&amount_out=&time=&venue=`: a trade you made, priced again on every venue from the market as it stood at the five-minute ticks either side of `time` (ISO such as 2026-10-28T09:00:00Z, or unix seconds; kept since 27 Oct 2026). Returns `best_venue`, `best_after_network_fee`, `shortfall_bps` (how far your `amount_out` fell short of the best venue, at the reading least favourable to that), and with `venue` given, `venue_choice_bps` and `fill_vs_your_venue_bps`. Nothing is executed or stored
 
 Example: `curl -s https://cantonvenues.com/api/v1/premium.json | jq '.assets[] | {symbol, premium}'`
 
@@ -43,8 +50,10 @@ Tools:
 - pools(sort_by="tvl", limit=20): CC pools on every AMM with liquidity, 24h volume, fee and fee APR, and any marked not trading; sort_by tvl, volume or apr
 - venues(): every Canton venue: type, 24h volume, and whether it is priced live, volume only, or unreadable
 - perps(base=None): perp markets on Rocky and Ekiden: price, basis, funding, spread, open interest; base e.g. BTC, ETH or CC
+- exit_cost(symbol, amount_usd=None): what selling the token for USDCx nets at sizes from $1K to $1M, the largest sale within 1%, 2% and 5% per venue and in all, the worst share since the record began; with amount_usd, that sale priced now
+- check_trade(sell, buy, amount_in, amount_out, time, venue=None): a trade you made against every venue at that time (same as /api/v1/check)
 
-Example question: "where is CBTC cheapest for $20K right now?"
+Example questions: "where is CBTC cheapest for $20K right now?", "how much CBTC can I sell on Canton within 2%?", "I sold 10,000 CC for 975 USDCx on Cantex at 09:00 UTC today: was that a good fill?"
 
 ## Pages
 

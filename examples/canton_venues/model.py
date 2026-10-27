@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -421,6 +423,41 @@ def swap_fee_usd(venue: str, cc_in_usd: Decimal, hop=None, frm: str | None = Non
     return network_fee_usd(venue, cc_in_usd)
 
 
+_FEES_LOCK = threading.RLock()
+
+
+@contextmanager
+def fees_from(table: dict | None) -> Iterator[None]:
+    """Price with the network fees of ``table`` (``fee_table_json``'s shape: execution.json's
+    ``network_fee``, a market archive reading's ``fees``): each venue's point and range, and each
+    pair's own fee where the table names one; everything restored after. None keeps the fees as they
+    are. One at a time: in a threaded server a live quote and a quote of an archived hour never mix."""
+    with _FEES_LOCK:
+        if table is None:
+            yield
+            return
+        saved_venue, saved_pair = dict(NETWORK_FEE), dict(PAIR_FEE_CC)
+        try:
+            PAIR_FEE_CC.clear()
+            for v, row in table.items():
+                if all(k in row for k in ("unit", "point", "low", "high", "basis")):
+                    NETWORK_FEE[v] = (row["unit"], Decimal(str(row["point"])), Decimal(str(row["low"])),
+                                      Decimal(str(row["high"])), row["basis"])
+                for pair, fee in (row.get("pairs_cc") or {}).items():
+                    if ">" in pair:  # by direction: CC>USDCX is CC sold for USDCx
+                        a, _, b = pair.partition(">")
+                        PAIR_FEE_CC[(v, a, b)] = Decimal(str(fee))
+                    else:
+                        a, _, b = pair.partition("/")
+                        PAIR_FEE_CC[(v, frozenset((a, b)))] = Decimal(str(fee))
+            yield
+        finally:
+            NETWORK_FEE.clear()
+            NETWORK_FEE.update(saved_venue)
+            PAIR_FEE_CC.clear()
+            PAIR_FEE_CC.update(saved_pair)
+
+
 def path_fee_usd(venue: str, path: tuple, cc_in_usd: Decimal, start: str | None = None) -> Decimal:
     """A path's network fees in dollars, each swap its pair's, walked from ``start`` when given (a hop
     of None: the venue's point)."""
@@ -662,6 +699,28 @@ class Route:
     def book(self) -> Hop | None:
         """The order book its shortest path trades ``to`` on (None for a pool): what its liquidity is."""
         return next((h for h in self.paths[0] if self.to in (h.a, h.b) and h.market), None)
+
+
+def venue_quotes(raw: dict, sell: str, buy: str, amount: Decimal, buy_usd: Decimal | None,
+                 hops: dict[str, list[Hop]] | None = None) -> dict[str, tuple[Decimal, tuple, Decimal | None]]:
+    """Every venue's best way to sell ``amount`` of ``sell`` for ``buy`` on its own markets, from
+    pools.json's shape ``raw`` (live, or a market archive reading), in one swap or two, as the site's
+    best execution compares them: {venue: (output before network fees, path, the path's network fees
+    in ``buy`` units)}. The fees need ``buy_usd``, the dollar price of ``buy`` (None without one); a
+    venue whose markets cannot fill the size returns 0. Pools marked not trading are no market.
+    ``hops`` (``venue_hops(raw)``, or some venues of it) saves rebuilding the markets on every call."""
+    cc_usd = Decimal(str(raw["cc_usd"]))
+    out: dict[str, tuple[Decimal, tuple, Decimal | None]] = {}
+    for v, hs in sorted((venue_hops(raw) if hops is None else hops).items()):
+        paths = venue_paths(hs, sell, buy, MIN_MARKET_USD)
+        if not paths:
+            continue
+
+        def fee(path, start=None, v=v):  # each swap's network fee in output units (its pair's own)
+            return path_fee_usd(v, path, cc_usd, start) / buy_usd if buy_usd else Decimal(0)
+        got, path = Route(v, buy, sell, buy, tuple(paths)).best(True, amount, fee)
+        out[v] = (got, path, fee(path, sell) if buy_usd and got > 0 else None)
+    return out
 
 
 def _cost(fee) -> Callable[..., Decimal]:

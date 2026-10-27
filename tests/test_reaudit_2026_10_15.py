@@ -165,7 +165,8 @@ def test_quote_routes_rebuild_from_pools_json_as_the_site_compares(batch3_tick):
     assert any(o["venue"] == "poolparty" and {o["a"], o["b"]} == {"CBTC", "USDC.B"}
                for o in batch3_tick["pools"]["other_pools"])
     src = (SITE / "mcp_server.py").read_text()
-    assert "m.venue_hops(raw)" in src and "m.route(" not in src
+    # since 2026-10-27 through model.venue_quotes, which the trade check and exit costs share
+    assert "m.venue_quotes(raw" in src and "m.route(" not in src
 
 
 def test_no_venue_claim_rests_on_a_pool_marked_not_trading():

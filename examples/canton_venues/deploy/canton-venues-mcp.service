@@ -7,6 +7,8 @@ Wants=network-online.target
 WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
 Environment=PYTHONUNBUFFERED=1
 Environment=VENUES_API_DIR=/var/www/canton-venues/api/v1
+# the collector's market archive, for check_trade and /check (market_archive.py)
+Environment=VENUES_STATE_DIR=/var/www/canton-venues-state
 ExecStart=/opt/canton-venues/.venv/bin/python mcp_server.py --http --host 127.0.0.1 --port 8097
 Restart=always
 RestartSec=10

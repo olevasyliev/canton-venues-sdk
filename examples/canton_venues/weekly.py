@@ -15,7 +15,7 @@ Each venue's volume for each UTC day comes from the first of these that has it:
    ``history.json``, when they cover at least ``MIN_PRICE_HOURS`` of its hours), and Tradecraft's
    hourly ``/volume_history``, summed into complete UTC days by the collector (venue_history.py).
 2. Our own reading: Rocky spot and Pool Party publish only a rolling 24-hour volume; the
-   collector's first hourly reading after midnight UTC (within ``READING_WINDOW_S``) stands for
+   collector's first hourly reading after midnight UTC (within ``volume_ledger.READING_WINDOW_S``) stands for
    the day that just closed. Recorded from 7 Oct 2026.
 3. DefiLlama's Canton DEX record, per protocol per UTC day (``totalDataChartBreakdown``), only
    when neither of the above exists and only from a read made after the day closed (its running
@@ -51,6 +51,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
+import volume_ledger
 from crosscheck import CANTEX, TEMPLE, http_get
 from publish_guard import PublishGuard
 from venue_pages import (SITE, THEMES, UP, VENUES, X_ICON, _fit, _font, _hex, _mix, _shell, _write,
@@ -71,7 +72,6 @@ SETTLE_S = 600
 FINAL_AFTER_S = 6 * 3600
 BACKFILL_DAYS = 2 * DAYS  # this period and the one before, for week on week
 MIN_PRICE_HOURS = 22      # our CC price readings must cover this many of a day's hours to convert it
-READING_WINDOW_S = 3600   # a midnight reading of a rolling 24 h figure counts within this of 00:00
 # our venue slug -> its name in DefiLlama's Canton DEX list (venue_pages.LLAMA_NAMES, by slug)
 LLAMA_SLUG = {"temple": "Temple", "cantex": "Cantex", "rocky": "Rocky Exchange Spot", "pool-party": "Pool Party"}
 # where a day's figure came from, as the page says it
@@ -96,13 +96,21 @@ def _get_twice(get, url: str, params: dict):
 
 def own_day(get, slug: str, t: int) -> dict:
     """One venue's own figure for the UTC day starting at ``t``: the window DefiLlama's adapters ask
-    for too, day start + 1 s to day end."""
+    for too, day start + 1 s to day end. With its trade count (None when the venue gives none: the
+    key says it was asked) and Temple's per market, for the volume ledger (volume_ledger.py)."""
     params = {"start_time": _iso(t + 1), "end_time": _iso(t + DAY)}
     if slug == "temple":
         raw = _get_twice(get, TEMPLE, params)
-        return {"usd": float(raw["total_volume_usd"])}
+        n = raw.get("trade_count")
+        out = {"usd": float(raw["total_volume_usd"]), "trades": None if n is None else int(n)}
+        markets = {x["symbol"]: [float(x["quote_volume"]), int(x.get("trade_count") or 0)]
+                   for x in raw.get("markets") or [] if x.get("symbol") and x.get("quote_volume") is not None}
+        if markets:
+            out["markets"] = markets
+        return out
     raw = _get_twice(get, CANTEX, params)["data"]
-    return {"cc": float(raw["volume_cc"])}
+    n = raw.get("swap_count")
+    return {"cc": float(raw["volume_cc"]), "trades": None if n is None else int(float(n))}
 
 
 def cc_price_day(history: dict, t: int) -> float | None:
@@ -117,18 +125,25 @@ def cc_price_day(history: dict, t: int) -> float | None:
 
 
 def fetch_days(cache: dict, history: dict, now: int, get=http_get) -> dict:
-    """Read every venue-own day record the period and the one before still lack. Each venue and day
-    fails alone: a day that cannot be read is simply not there (and the card leaves it out)."""
+    """Read every venue-own day record the period and the one before still lack, and the volume
+    ledger's days (``volume_ledger.DAYS``) read before trade counts were kept. Each venue and day
+    fails alone: a day that cannot be read is simply not there (and the card leaves it out). A
+    re-read keeps a converted dollar figure: Cantex's needs our CC price readings of that day, which
+    history.json keeps for a week only."""
     end = now - now % DAY
-    for t in range(end - BACKFILL_DAYS * DAY, end, DAY):
+    for t in range(end - max(BACKFILL_DAYS, volume_ledger.DAYS) * DAY, end, DAY):
         if now < t + DAY + SETTLE_S:
             continue
         for slug in sorted(OWN_DAY):
             have = cache.setdefault(slug, {}).get(str(t))
-            if have and have["t"] >= t + DAY + FINAL_AFTER_S:
+            if have and have["t"] >= t + DAY + FINAL_AFTER_S and "trades" in have:
                 continue
+            if have is None and t < end - BACKFILL_DAYS * DAY:
+                continue  # the ledger fills in counts for days the card read, it does not reach further back
             try:
-                cache[slug][str(t)] = {**own_day(get, slug, t), "t": now}
+                final = have is not None and have["t"] >= t + DAY + FINAL_AFTER_S  # re-read for its count only
+                kept = {k: have[k] for k in ("usd", "cc_usd") if final and k in have and slug == "cantex"}
+                cache[slug][str(t)] = {**own_day(get, slug, t), **kept, "t": now}
             except Exception as exc:  # noqa: BLE001
                 log.warning("weekly: %s %s: %s", slug, _iso(t)[:10], type(exc).__name__)
     for t, rec in (cache.get("cantex") or {}).items():
@@ -166,19 +181,6 @@ def _days_text(ts: list[int]) -> str:
     return ", ".join(_date(t, False) for t in ts)
 
 
-def _readings(hist: dict, slug: str) -> dict[int, float]:
-    """Our first hourly reading of the venue's rolling 24 h spot volume after each midnight UTC, by
-    the day it closes."""
-    h = hist.get("hourly") or {}
-    col = ((h.get("venues") or {}).get(slug) or {}).get("spot_volume") or []
-    out: dict[int, float] = {}
-    for x, v in zip(h.get("t") or [], col):
-        day = x - x % DAY - DAY
-        if x % DAY < READING_WINDOW_S and v and v > 0 and day not in out:
-            out[day] = float(v)
-    return out
-
-
 def final_after(source: str) -> int:
     """How long after a day closes a read of this daily record holds that day's final figure.
     DefiLlama's point for the running day is a rolling 24-hour figure, not the day so far (its 7 Oct
@@ -209,7 +211,7 @@ def day_figures(hist: dict, days_cache: dict, slug: str) -> tuple[dict[int, tupl
                 out[int(t)] = (float(v), source)
             else:
                 early.add(int(t))
-    for t, v in _readings(hist, slug).items():
+    for t, v in volume_ledger.readings(hist, slug).items():
         out[t] = (v, "reading")
     for t, rec in (days_cache.get(slug) or {}).items():
         if rec.get("usd") and rec["usd"] > 0:
@@ -598,6 +600,11 @@ def main() -> None:
         cache = {}
     fetch_days(cache, prices, now)
     _write(cache_path, json.dumps(cache, separators=(",", ":")))
+    try:  # every venue's daily volume for the last month, each day's records side by side
+        _write(args.out / "api" / "v1" / "volume.json",
+               json.dumps(volume_ledger.build(hist, cache, now, VENUES), separators=(",", ":")))
+    except Exception:  # the weekly card does not wait on the ledger
+        log.exception("volume ledger")
     build(args.out, hist, now, PublishGuard(args.out / "weekly" / "published.json"), cache)
 
 

@@ -13,7 +13,11 @@ Two ways to run it:
     python mcp_server.py
 
 Data source: ``VENUES_API_DIR`` (the collector's output directory) when set,
-otherwise ``VENUES_API_URL`` (default https://cantonvenues.com/api/v1).
+otherwise ``VENUES_API_URL`` (default https://cantonvenues.com/api/v1). ``check_trade`` reads the
+market archive under ``VENUES_STATE_DIR`` when set, otherwise the hosted ``/api/v1/check``.
+
+Served over HTTP, the same answers are plain GET routes too: ``/quote`` (``quote``) and ``/check``
+(``check_trade``), behind nginx as ``/api/v1/quote`` and ``/api/v1/check``.
 """
 
 from __future__ import annotations
@@ -25,14 +29,21 @@ import time
 from decimal import Decimal
 from pathlib import Path
 
+import anyio
 import httpx
 import model as m
+import trade_check
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 API_DIR = os.getenv("VENUES_API_DIR")
 API_URL = os.getenv("VENUES_API_URL", "https://cantonvenues.com/api/v1").rstrip("/")
+# the collector's state directory: its market archive (market_archive.py) answers check_trade; without
+# it, check_trade asks the hosted server's /api/v1/check
+STATE_DIR = os.getenv("VENUES_STATE_DIR")
 CACHE_S = 30
 SITE = "https://cantonvenues.com"
 
@@ -62,20 +73,6 @@ def _books() -> tuple[dict, float]:
     return books, raw["cc_usd"]
 
 
-def _pair_fees() -> None:
-    """Each pair's own network fee where the venue's quotes name it (Cantex), from the collector's
-    fee table in execution.json, so a quote here nets the same fees as the site."""
-    m.PAIR_FEE_CC.clear()
-    for v, row in ((load("execution") or {}).get("network_fee") or {}).items():
-        for pair, fee in (row.get("pairs_cc") or {}).items():
-            if ">" in pair:  # by direction: CC>USDCX is CC sold for USDCx
-                a, _, b = pair.partition(">")
-                m.PAIR_FEE_CC[(v, a, b)] = Decimal(str(fee))
-            else:
-                a, _, b = pair.partition("/")
-                m.PAIR_FEE_CC[(v, frozenset((a, b)))] = Decimal(str(fee))
-
-
 def _token_row(key: str) -> dict | None:
     return next((t for t in load("tokens")["tokens"] if t["key"] == m.key(key)), None)
 
@@ -94,7 +91,9 @@ server = MCPServer(
         "Tokens are named by symbol (CC is Canton Coin). Use quote() for any trade size: every venue "
         "is priced on its own markets (pools from live reserves, the Temple and Rocky order books), in one "
         "swap or two, as the site's best execution compares them; each venue's output comes before and "
-        "after its per-trade network fee (network_fees). Nothing here executes a trade."
+        "after its per-trade network fee (network_fees). exit_cost() says what selling a token for dollars "
+        "nets at any size and how much sells within 1%, 2% or 5%; check_trade() prices a trade you already "
+        "made against every venue at that time. Nothing here executes a trade."
     ),
     website_url=SITE,
     version="1.0.0",
@@ -188,7 +187,6 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
     reserves have stood still while its price left the market is no market here (`not_trading`)."""
     raw = load("pools")
     cc_usd = Decimal(str(raw["cc_usd"]))
-    _pair_fees()
     if (amount is None) == (amount_usd is None):
         raise ToolError("give exactly one of amount or amount_usd")
     s, b = m.key(sell), m.key(buy)
@@ -206,14 +204,13 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
         amount = float(Decimal(str(amount_usd)) / price)
     names = {t["key"]: t["symbol"] for t in load("tokens")["tokens"]} | {m.CC: "CC"}
     out_usd = usd(b, buy)
+    # each pair's own network fee where the venue's quotes name it, from the collector's fee table in
+    # execution.json, so a quote here nets the same fees as the site
+    with m.fees_from((load("execution") or {}).get("network_fee")):
+        quotes = m.venue_quotes(raw, s, b, Decimal(str(amount)), out_usd)
+        fee_table = m.fee_table_json()
     by_venue = {}
-    for v, hops in sorted(m.venue_hops(raw).items()):
-        paths = m.venue_paths(hops, s, b, m.MIN_MARKET_USD)
-        if not paths:
-            continue
-        def fee(path, start=None, v=v):  # each swap's network fee in output units (its pair's own)
-            return m.path_fee_usd(v, path, cc_usd, start) / out_usd if out_usd else Decimal(0)
-        got, path = m.Route(v, names.get(b, b), s, b, tuple(paths)).best(True, Decimal(str(amount)), fee)
+    for v, (got, path, fee) in quotes.items():
         if got <= 0:
             by_venue[v] = {"amount_out": None, "note": "too thin for this size"}
             continue
@@ -221,7 +218,7 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
         by_venue[v] = {"amount_out": _r(got, 10), "swaps": len(path),
                        **({"via": names.get(via, via)} if via else {}),
                        "markets": [h.market or f"{names.get(h.a, h.a)}/{names.get(h.b, h.b)} pool" for h in path],
-                       "after_network_fee": _r(got - fee(path, s), 10) if out_usd else None}
+                       "after_network_fee": _r(got - fee, 10) if fee is not None else None}
     if not by_venue:
         raise ToolError(f"no venue trades {sell!r} for {buy!r} in one or two swaps; call list_tokens() for symbols")
     filled = {v: q for v, q in by_venue.items() if q["amount_out"]}
@@ -231,7 +228,7 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
             "best_venue": best, "amount_out": filled[best]["amount_out"] if best else None,
             "by_venue": by_venue, "as_of": raw["t"],
             "not_trading": raw.get("not_trading") or [],
-            "network_fees": {"included": "after_network_fee, per swap", "per_trade": m.fee_table_json()}}
+            "network_fees": {"included": "after_network_fee, per swap", "per_trade": fee_table}}
 
 
 @server.tool(title="Canton premium to global prices")
@@ -293,6 +290,96 @@ def perps(base: str | None = None) -> dict:
     d = load("perps")
     rows = [x for x in d["markets"] if base is None or x["base"].upper() == base.upper()]
     return {"as_of": d["t"], "markets": rows}
+
+
+@server.tool(title="Exit cost: what selling a token for dollars nets")
+def exit_cost(symbol: str, amount_usd: float | None = None) -> dict:
+    """What selling a token for dollars (USDCx) nets on Canton, as a share of its value at our price:
+    a ladder from $1K to $1M per venue and at the best one, the largest sale each venue (and all of
+    them together) takes within 1%, 2% and 5%, what limited each (the cost, or the end of a venue's
+    visible order book), and the worst share at $10K and $50K since the record began. For lending,
+    vault and risk tools: what collateral sells for on Canton, not only what it is quoted at. With
+    amount_usd, also that exact sale priced now on every venue (as quote() would)."""
+    d = load("exit")
+    row = next((x for x in d["tokens"] if x["key"] == m.key(symbol)), None)
+    if row is None:
+        raise ToolError(f"no exit figures for {symbol!r}: no venue sells it for USDCx in one or two swaps")
+    out = {"as_of": d["t"], "sell_for": d["sell_for"], "worst_since": d.get("worst_since"), **row,
+           "not_trading": d.get("not_trading") or []}
+    if amount_usd is not None:
+        q = quote(symbol, "USDCx", amount_usd=amount_usd)
+        usdcx = Decimal(str((_token_row("USDCX") or {}).get("price_usd") or 1))
+        value = Decimal(str(amount_usd))
+        out["this_sale"] = {"amount_usd": amount_usd, "best_venue": q["best_venue"], "by_venue": {
+            v: {"usdcx_after_network_fee": x.get("after_network_fee"),
+                "share_of_value": None if x.get("after_network_fee") is None
+                else round(float(Decimal(str(x["after_network_fee"])) * usdcx / value), 6)}
+            for v, x in q["by_venue"].items()}}
+    return out
+
+
+@server.tool(title="Check a trade against every Canton venue at that time")
+def check_trade(sell: str, buy: str, amount_in: float, amount_out: float, time: str,
+                venue: str | None = None) -> dict:
+    """Was a trade well executed? Give the token sold and bought, the amount sold, the amount received,
+    the time (ISO such as 2026-10-27T18:05:00Z, or unix seconds) and optionally the venue. The trade
+    is priced again on every venue from the pool reserves and order books read at the five-minute
+    ticks either side of it (archive since 27 Oct 2026), by the same code as quote(), after network
+    fees. Returns the venue that returned the most, how far the trade fell short of it in basis points
+    (at the reading least favourable to that), and with venue given, how much of the gap was the
+    choice of venue and how much the fill itself. Nothing is executed or stored."""
+    if STATE_DIR:
+        try:
+            return trade_check.check(Path(STATE_DIR) / "market", sell, buy, amount_in, amount_out, time, venue)
+        except trade_check.CheckError as e:
+            raise ToolError(str(e)) from None
+    params = {"sell": sell, "buy": buy, "amount_in": amount_in, "amount_out": amount_out, "time": time}
+    r = httpx.get(f"{API_URL}/check", params=params | ({"venue": venue} if venue else {}), timeout=30)
+    if r.status_code != 200:
+        raise ToolError((r.json() if r.headers.get("content-type", "").startswith("application/json")
+                         else {}).get("error") or f"HTTP {r.status_code}")
+    return r.json()
+
+
+# === plain HTTP: the same answers as GET routes (behind nginx at /api/v1/quote and /api/v1/check) ===
+
+def _json(fn, *args, **kw) -> JSONResponse:
+    try:
+        return JSONResponse(fn(*args, **kw), headers={"Cache-Control": "no-store"})
+    except (ToolError, ValueError) as e:  # trade_check.CheckError is a ValueError
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+def _num(q, name: str) -> float | None:
+    x = q.get(name)
+    if x is None or x == "":
+        return None
+    try:
+        return float(x)
+    except ValueError:
+        raise ToolError(f"{name} must be a number") from None
+
+
+@server.custom_route("/quote", methods=["GET"])
+async def quote_route(request: Request) -> JSONResponse:
+    q = request.query_params
+    if not q.get("sell") or not q.get("buy"):
+        return JSONResponse({"error": "give sell, buy and one of amount or amount_usd"}, status_code=400)
+    return await anyio.to_thread.run_sync(
+        lambda: _json(lambda: quote(q["sell"], q["buy"], amount=_num(q, "amount"), amount_usd=_num(q, "amount_usd"))))
+
+
+@server.custom_route("/check", methods=["GET"])
+async def check_route(request: Request) -> JSONResponse:
+    q = request.query_params
+    missing = [k for k in ("sell", "buy", "amount_in", "amount_out", "time") if not q.get(k)]
+    if missing:
+        return JSONResponse({"error": f"missing {', '.join(missing)}"}, status_code=400)
+    if not STATE_DIR:
+        return JSONResponse({"error": "this server has no market archive (VENUES_STATE_DIR)"}, status_code=503)
+    return await anyio.to_thread.run_sync(lambda: _json(
+        trade_check.check, Path(STATE_DIR) / "market", q["sell"], q["buy"], q["amount_in"], q["amount_out"],
+        q["time"], q.get("venue")))
 
 
 def main() -> None:

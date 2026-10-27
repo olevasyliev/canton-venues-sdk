@@ -52,7 +52,7 @@ ssh "$SERVER" "
   # the watchdog's timer, enabled once: every ten minutes it reads the live site and messages the owner
   # on Telegram only when the snapshot is over 30 min old, and once when it is fresh again
   systemctl is-enabled canton-venues-watchdog.timer >/dev/null 2>&1 || systemctl enable --now canton-venues-watchdog.timer
-  # the quote check's timer, every three hours: our pool math against the venues' own quotes
+  # the quote check's timer, hourly at :20: our pool math against the venues' own quotes
   systemctl is-enabled canton-venues-quotecheck.timer >/dev/null 2>&1 || systemctl enable --now canton-venues-quotecheck.timer
   # the Arkiv log's timer, hourly at :25 after the quote check: the snapshot written to Arkiv's testnet
   systemctl is-enabled canton-venues-arkiv.timer >/dev/null 2>&1 || systemctl enable --now canton-venues-arkiv.timer

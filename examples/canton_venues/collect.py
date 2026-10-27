@@ -37,7 +37,9 @@ from pathlib import Path
 import alerts as al
 import channel
 import exec_history
+import exit_cost
 import httpx
+import market_archive
 import model as m
 import venue_history
 import venue_pages
@@ -297,6 +299,8 @@ class Collector:
         # row id -> unix time of the last successful read of that venue's data, for the publish guard
         self.fresh: dict[str, int] = {}
         self.guard = PublishGuard(out / "venues" / "published.json")
+        # the lowest share of value each token's best venue kept at $10K and $50K so far (exit_cost.py)
+        self.exit_worst = exit_cost.WorstRecord(self.state / "exit_worst.json")
         # per-venue daily volume and our hourly readings, for the venue pages' charts (venue_history.py)
         self.vhist = load_json(self.api / "venue_history.json", {})
         # each pool's reserves as last read and since when they stood still, kept across restarts
@@ -1213,7 +1217,7 @@ class Collector:
         write_json(self.state / "pools_still.json", self.pool_still)
         write_json(self.api / "lp.json", {"t": now, "pools": lp, "unpriced_pools": self._unpriced_json(cc_usd),
                                           "other_pools": self._other_json(prices)})
-        write_json(self.api / "pools.json", {
+        pools_doc = {
             "t": now, "cc_usd": float(cc_usd),
             "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()},
             # every dollar-quoted book by token and market (Rocky's in USDCx and USDC.B, Temple's in
@@ -1229,7 +1233,25 @@ class Collector:
                             and (self._other_tvl(o, prices) or 0) >= MIN_MARKET_USD],
             # pools whose reserves stood still while their price left the market: listed above, priced
             # by nothing, in no route
-            "not_trading": self._still_json()})
+            "not_trading": self._still_json()}
+        write_json(self.api / "pools.json", pools_doc)
+        try:  # the market as it stood this tick, so a trade can be checked afterwards (market_archive.py)
+            market_archive.record(self.state / "market",
+                                  _finite(market_archive.reading(pools_doc, tokens, m.fee_table_json()), []))
+            if slow:
+                market_archive.prune(self.state / "market", now)
+        except Exception:
+            log.exception("market archive")
+        try:  # what selling each token for dollars nets at any size (exit_cost.py)
+            exit_doc = exit_cost.build(_finite(pools_doc, []), tokens, now)
+            # the worst so far counts only ticks that read the venues holding most of the depth (both
+            # core venues, Temple's books and Rocky's): one not read would make the market look thinner
+            # than it was. Pool Party and OneSwap are small; their absence is not waited for
+            if not self.down and self.temple_priced and now - self.fresh.get("rocky", 0) <= 600:
+                self.exit_worst.update(exit_doc)
+            write_json(self.api / "exit.json", self.exit_worst.attach(exit_doc))
+        except Exception:
+            log.exception("exit cost")
         write_json(self.api / "history.json", self.history)
         write_json(self.api / "venues.json", venues)
         write_json(self.api / "perps.json", {"t": now, "markets": perps})
