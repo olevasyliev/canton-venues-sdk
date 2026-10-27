@@ -3,9 +3,9 @@
 
 A day's volume on a venue can be read up to three ways, and the ledger keeps every one it has:
 
-- ``venue_day``: the venue's own record of that exact UTC day. Temple's settled volume (with its
-  trade count and each market's), Cantex's volume in CC at the mean of our CC price readings that day
-  (with its swap count), Tradecraft's hourly volume history summed into the day.
+- ``venue_day``: the venue's own record of that exact UTC day. Temple's settled volume (and each
+  market's), Cantex's volume in CC at the mean of our CC price readings that day, Tradecraft's
+  hourly volume history summed into the day.
 - ``venue_24h``: our reading, just after midnight UTC, of the venue's own rolling 24-hour counter
   (the only figure Rocky spot and Pool Party publish).
 - ``outside``: an outside aggregator's daily record of the closed day, read after the day ended; a
@@ -16,7 +16,12 @@ is how far the records the day has disagree (largest over smallest, less one) an
 ``agree`` (within ``AGREE``), ``differ``, or ``single`` (one record only). A venue's own day record
 and the aggregator's can share a source (Temple's agree to the dollar), so ``agree`` means the
 records match, not that they were made independently; our midnight reading of the venue's live
-counter is the one made by us. Trades and the average trade are the venue's own counts.
+counter is the one made by us.
+
+The venues' own trade counts (Temple's and Cantex's, Temple's per market too) are kept off the web
+root (``COUNTS_FILE`` in the state directory, written by the weekly job) and are not published: the
+number of trades and the average trade size are given on request, from ``averages`` (run this file
+with ``--averages``).
 
 For anyone who has to state how much traded where: an issuer's or an oracle's adoption figure, a
 reward programme's baseline, a reviewer checking either.
@@ -24,7 +29,10 @@ reward programme's baseline, a reviewer checking either.
 
 from __future__ import annotations
 
+import argparse
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 DAY = 86400
 DAYS = 30
@@ -42,6 +50,9 @@ OWN_SOURCE = {"temple": "Temple's settled volume for the day",
               "tradecraft": "Tradecraft's hourly volume history, summed into the day"}
 OUTSIDE_FINAL_S = 6 * 3600  # the aggregator's point for a closed day is final this long after (weekly.final_after)
 READING_WINDOW_S = 3600     # our first reading within this of 00:00 UTC stands for the day that closed
+COUNTS_FILE = "volume_counts.json"  # in the state directory, beside the web root
+ON_REQUEST = ("Trade counts and the average trade size per venue and day (Temple also per market) are "
+              "recorded and given on request: https://cantonvenues.com/#contact")
 
 
 def _day(t: int) -> str:
@@ -104,14 +115,10 @@ def venue_days(hist: dict, cache: dict, slug: str, days: list[int]) -> list[dict
                        check="single" if spread is None else ("agree" if spread <= AGREE else "differ"))
         else:
             row.update(usd=None, check="none")
-        if rec.get("trades"):
-            row["trades"] = rec["trades"]
-            if figs.get("venue_day"):
-                row["avg_trade_usd"] = round(figs["venue_day"] / rec["trades"], 2)
         if rec.get("cc") is not None:
             row["volume_cc"] = round(float(rec["cc"]), 4)
         if rec.get("markets"):
-            row["markets"] = {sym: {"usd": round(usd, 2), "trades": n} for sym, (usd, n) in sorted(rec["markets"].items())}
+            row["markets_usd"] = {sym: round(usd, 2) for sym, usd in sorted(rec["markets"].items())}
         rows.append(row)
     return rows
 
@@ -143,4 +150,43 @@ def build(hist: dict, cache: dict, now: int, venues: list[dict]) -> dict:
                        "publishes one, else our midnight reading of its 24-hour counter, else an outside "
                        "daily record; figures lists every record the day has and check says whether they "
                        f"agree within {int(AGREE * 100)}%. A venue with no record for a day is missing that "
-                       "day, never estimated. Perpetuals are not counted; OneSwap publishes no volume.")}
+                       "day, never estimated. Perpetuals are not counted; OneSwap publishes no volume."),
+            "on_request": ON_REQUEST}
+
+
+def averages(cache: dict, counts: dict, now: int, days: int = DAYS) -> list[dict]:
+    """For a request: each venue's trades and average trade in dollars per closed day (Temple per
+    market too), from the venues' own day records (``cache``) and their counts (``counts``)."""
+    end = now - now % DAY
+    out = []
+    for slug in sorted(counts):
+        for t in range(end - days * DAY, end, DAY):
+            n, rec = (counts[slug].get(str(t)) or {}), (cache.get(slug) or {}).get(str(t)) or {}
+            if not n.get("trades") or not rec.get("usd"):
+                continue
+            row = {"venue": slug, "day": _day(t), "usd": round(rec["usd"], 2), "trades": n["trades"],
+                   "avg_trade_usd": round(rec["usd"] / n["trades"], 2)}
+            mt, mu = n.get("market_trades") or {}, rec.get("markets") or {}
+            if mt:
+                row["markets"] = {s: {"usd": round(mu[s], 2), "trades": k, "avg_trade_usd": round(mu[s] / k, 2)}
+                                  for s, k in sorted(mt.items()) if k and mu.get(s)}
+            out.append(row)
+    return out
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Trade counts and average trade size per venue and day, on request")
+    ap.add_argument("--averages", action="store_true", required=True)
+    ap.add_argument("--out", type=Path, required=True, help="the web root (its weekly/days.json)")
+    ap.add_argument("--state", type=Path, help="private records (default: <out>-state)")
+    ap.add_argument("--days", type=int, default=DAYS)
+    args = ap.parse_args()
+    state = args.state or args.out.with_name(args.out.name + "-state")
+    cache = json.loads((args.out / "weekly" / "days.json").read_text())
+    counts = json.loads((state / COUNTS_FILE).read_text())
+    now = int(datetime.now(UTC).timestamp())
+    print(json.dumps(averages(cache, counts, now, args.days), indent=1))
+
+
+if __name__ == "__main__":
+    main()

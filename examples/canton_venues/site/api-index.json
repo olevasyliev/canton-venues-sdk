@@ -96,7 +96,7 @@
     {
       "name": "volume",
       "url": "https://cantonvenues.com/api/v1/volume.json",
-      "about": "every venue's daily spot volume for the last 30 closed UTC days, with each day's records side by side (the venue's own day record, our midnight reading of its 24-hour counter, an outside daily record), whether they agree within 5%, and the venue's own trade counts (Temple also per market)"
+      "about": "every venue's daily spot volume for the last 30 closed UTC days, with each day's records side by side (the venue's own day record, our midnight reading of its 24-hour counter, an outside daily record), whether they agree within 5%, and Temple's volume per market; trade counts and average trade size are recorded and given on request"
     }
   ],
   "computed": [

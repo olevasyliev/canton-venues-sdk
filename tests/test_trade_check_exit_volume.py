@@ -211,15 +211,15 @@ def test_ledger_keeps_every_record_and_says_whether_they_agree():
                       "rocky": {"source": "defillama", "t": NOW, "points": [[D0, 50.0], [D1, 50.0]]}},
             "hourly": {"t": [D1 + 300, D1 + DAY + 300],
                        "venues": {"temple": {"spot_volume": [101.0, 203.0]}, "rocky": {"spot_volume": [80.0, 90.0]}}}}
-    cache = {"temple": {str(D1): {"usd": 200.0, "trades": 40, "t": NOW,
-                                  "markets": {"CC/USDCx": [150.0, 30], "CBTC/USDCx": [50.0, 10]}}}}
+    cache = {"temple": {str(D1): {"usd": 200.0, "t": NOW, "markets": {"CC/USDCx": 150.0, "CBTC/USDCx": 50.0}}}}
     venues = [{"slug": "temple", "name": "Temple"}, {"slug": "rocky", "name": "Rocky"}, {"slug": "oneswap", "name": "OneSwap"}]
     doc = volume_ledger.build(hist, cache, NOW, venues)
     by = {v["slug"]: {r["t"]: r for r in v["days"]} for v in doc["venues"]}
     t1 = by["temple"][D1]
     assert t1["usd"] == 200.0 and t1["source"] == "venue_day" and t1["check"] == "agree"
     assert t1["figures"] == {"venue_day": 200.0, "venue_24h": 203.0, "outside": 200.5}
-    assert t1["trades"] == 40 and t1["avg_trade_usd"] == 5.0 and t1["markets"]["CC/USDCx"] == {"usd": 150.0, "trades": 30}
+    assert t1["markets_usd"] == {"CBTC/USDCx": 50.0, "CC/USDCx": 150.0}
+    assert "trade" not in json.dumps(doc["venues"]) and "on request" in doc["on_request"]
     r1 = by["rocky"][D1]  # the outside record repeats the day before to the cent: stuck, left out
     assert r1["figures"] == {"venue_24h": 90.0} and r1["check"] == "single" and r1["usd"] == 90.0
     r0 = by["rocky"][D0]
@@ -228,11 +228,12 @@ def test_ledger_keeps_every_record_and_says_whether_they_agree():
     assert doc["by_day"][-1] == {"day": "2026-10-26", "t": D1, "usd": 290.0, "venues": ["Temple", "Rocky"], "missing": []}
 
 
-def test_a_final_cantex_day_is_reread_for_its_count_and_keeps_its_dollar_figure():
+def test_trade_counts_go_to_the_private_record_only_and_a_final_day_keeps_its_dollar_figure():
     end = NOW - NOW % DAY
     old = end - 20 * DAY
     cache = {"cantex": {str(old): {"cc": 1000.0, "usd": 100.0, "cc_usd": 0.1, "t": old + DAY + 7 * 3600}},
              "temple": {str(old): {"usd": 5.0, "t": old + DAY + 7 * 3600}}}
+    counts: dict = {}
     calls = []
 
     def get(url, params):
@@ -240,15 +241,24 @@ def test_a_final_cantex_day_is_reread_for_its_count_and_keeps_its_dollar_figure(
         if url == weekly.TEMPLE:
             return {"total_volume_usd": 5.0, "trade_count": 3, "markets": [{"symbol": "CC/USDCx", "quote_volume": 5.0, "trade_count": 3}]}
         return {"data": {"volume_cc": "1000", "swap_count": "7.0000000000"}}
-    weekly.fetch_days(cache, {}, NOW, get)
+    weekly.fetch_days(cache, {}, NOW, get, counts=counts)
     c = cache["cantex"][str(old)]
-    assert c["trades"] == 7 and c["usd"] == 100.0 and c["cc_usd"] == 0.1
-    assert cache["temple"][str(old)]["trades"] == 3 and cache["temple"][str(old)]["markets"] == {"CC/USDCx": [5.0, 3]}
+    assert c["usd"] == 100.0 and c["cc_usd"] == 0.1  # re-read for its count, the converted figure stays
+    assert cache["temple"][str(old)]["markets"] == {"CC/USDCx": 5.0}
+    # days.json sits under the web root: no count in it; the counts are in the private record
+    assert "trade" not in json.dumps(cache)
+    assert counts["cantex"][str(old)] == {"trades": 7}
+    assert counts["temple"][str(old)] == {"trades": 3, "market_trades": {"CC/USDCx": 3}}
     # a day older than the card's two weeks that was never read is not reached for
     assert str(end - 25 * DAY) not in cache["cantex"]
     n = len(calls)
-    weekly.fetch_days(cache, {}, NOW, get)  # every day read is final and counted: nothing is read again
+    weekly.fetch_days(cache, {}, NOW, get, counts=counts)  # every day read is final and counted
     assert len(calls) == n
+    # on request: the average trade per venue and day, Temple per market
+    rows = {(r["venue"], r["day"]): r for r in volume_ledger.averages(cache, counts, NOW)}
+    t = rows[("temple", volume_ledger._day(old))]
+    assert t["avg_trade_usd"] == pytest.approx(5 / 3, abs=0.01) and t["markets"]["CC/USDCx"]["trades"] == 3
+    assert rows[("cantex", volume_ledger._day(old))]["avg_trade_usd"] == pytest.approx(100 / 7, abs=0.01)
 
 
 def test_exit_and_ledger_files_round_trip_as_json():

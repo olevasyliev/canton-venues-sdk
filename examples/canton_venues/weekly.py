@@ -94,20 +94,22 @@ def _get_twice(get, url: str, params: dict):
         return get(url, params)
 
 
+COUNT_KEYS = ("trades", "market_trades")  # kept off the web root (``fetch_days`` ``counts``)
+
+
 def own_day(get, slug: str, t: int) -> dict:
     """One venue's own figure for the UTC day starting at ``t``: the window DefiLlama's adapters ask
-    for too, day start + 1 s to day end. With its trade count (None when the venue gives none: the
-    key says it was asked) and Temple's per market, for the volume ledger (volume_ledger.py)."""
+    for too, day start + 1 s to day end. With its trade count (None when the venue gives none) and,
+    for Temple, each market's dollar volume and trade count (``markets`` always there: it says the
+    record was asked for them), for the volume ledger (volume_ledger.py)."""
     params = {"start_time": _iso(t + 1), "end_time": _iso(t + DAY)}
     if slug == "temple":
         raw = _get_twice(get, TEMPLE, params)
         n = raw.get("trade_count")
-        out = {"usd": float(raw["total_volume_usd"]), "trades": None if n is None else int(n)}
-        markets = {x["symbol"]: [float(x["quote_volume"]), int(x.get("trade_count") or 0)]
-                   for x in raw.get("markets") or [] if x.get("symbol") and x.get("quote_volume") is not None}
-        if markets:
-            out["markets"] = markets
-        return out
+        rows = [x for x in raw.get("markets") or [] if x.get("symbol") and x.get("quote_volume") is not None]
+        return {"usd": float(raw["total_volume_usd"]), "trades": None if n is None else int(n),
+                "markets": {x["symbol"]: float(x["quote_volume"]) for x in rows},
+                "market_trades": {x["symbol"]: int(x.get("trade_count") or 0) for x in rows}}
     raw = _get_twice(get, CANTEX, params)["data"]
     n = raw.get("swap_count")
     return {"cc": float(raw["volume_cc"]), "trades": None if n is None else int(float(n))}
@@ -124,26 +126,33 @@ def cc_price_day(history: dict, t: int) -> float | None:
     return sum(vals) / len(vals) if len(hours) >= MIN_PRICE_HOURS else None
 
 
-def fetch_days(cache: dict, history: dict, now: int, get=http_get) -> dict:
+def fetch_days(cache: dict, history: dict, now: int, get=http_get, counts: dict | None = None) -> dict:
     """Read every venue-own day record the period and the one before still lack, and the volume
-    ledger's days (``volume_ledger.DAYS``) read before trade counts were kept. Each venue and day
-    fails alone: a day that cannot be read is simply not there (and the card leaves it out). A
-    re-read keeps a converted dollar figure: Cantex's needs our CC price readings of that day, which
-    history.json keeps for a week only."""
+    ledger's days (``volume_ledger.DAYS``) read before Temple's markets and the trade counts were
+    kept. ``cache`` (weekly/days.json, under the web root) gets the volumes; ``counts`` (kept off
+    the web root, None to drop them) gets the trade counts (``COUNT_KEYS``), given on request only.
+    Each venue and day fails alone: a day that cannot be read is simply not there (and the card
+    leaves it out). A re-read keeps a converted dollar figure: Cantex's needs our CC price readings
+    of that day, which history.json keeps for a week only."""
     end = now - now % DAY
     for t in range(end - max(BACKFILL_DAYS, volume_ledger.DAYS) * DAY, end, DAY):
         if now < t + DAY + SETTLE_S:
             continue
         for slug in sorted(OWN_DAY):
             have = cache.setdefault(slug, {}).get(str(t))
-            if have and have["t"] >= t + DAY + FINAL_AFTER_S and "trades" in have:
+            final = have is not None and have["t"] >= t + DAY + FINAL_AFTER_S
+            lacks = ((slug == "temple" and "markets" not in have) if have else True) or (
+                counts is not None and str(t) not in counts.get(slug, {}))
+            if final and not lacks:
                 continue
             if have is None and t < end - BACKFILL_DAYS * DAY:
-                continue  # the ledger fills in counts for days the card read, it does not reach further back
+                continue  # the ledger fills in days the card read, it does not reach further back
             try:
-                final = have is not None and have["t"] >= t + DAY + FINAL_AFTER_S  # re-read for its count only
+                rec = own_day(get, slug, t)
+                if counts is not None:
+                    counts.setdefault(slug, {})[str(t)] = {k: rec[k] for k in COUNT_KEYS if k in rec}
                 kept = {k: have[k] for k in ("usd", "cc_usd") if final and k in have and slug == "cantex"}
-                cache[slug][str(t)] = {**own_day(get, slug, t), **kept, "t": now}
+                cache[slug][str(t)] = {**{k: v for k, v in rec.items() if k not in COUNT_KEYS}, **kept, "t": now}
             except Exception as exc:  # noqa: BLE001
                 log.warning("weekly: %s %s: %s", slug, _iso(t)[:10], type(exc).__name__)
     for t, rec in (cache.get("cantex") or {}).items():
@@ -585,7 +594,9 @@ def main() -> None:
     ap.add_argument("--api", type=Path, required=True, help="directory holding venue_history.json, history.json")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--now", type=int, help="unix time to build for (default: now)")
+    ap.add_argument("--state", type=Path, help="private records (default: <out>-state, beside the web root)")
     args = ap.parse_args()
+    state = args.state or args.out.with_name(args.out.name + "-state")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     now = args.now or int(time.time())
     hist = json.loads((args.api / "venue_history.json").read_text())
@@ -598,8 +609,15 @@ def main() -> None:
         cache = json.loads(cache_path.read_text())
     except (OSError, ValueError):
         cache = {}
-    fetch_days(cache, prices, now)
+    # the venues' trade counts, off the web root: given on request (volume_ledger.py --averages)
+    counts_path = state / volume_ledger.COUNTS_FILE
+    try:
+        counts = json.loads(counts_path.read_text())
+    except (OSError, ValueError):
+        counts = {}
+    fetch_days(cache, prices, now, counts=counts)
     _write(cache_path, json.dumps(cache, separators=(",", ":")))
+    _write(counts_path, json.dumps(counts, separators=(",", ":")))
     try:  # every venue's daily volume for the last month, each day's records side by side
         _write(args.out / "api" / "v1" / "volume.json",
                json.dumps(volume_ledger.build(hist, cache, now, VENUES), separators=(",", ":")))
