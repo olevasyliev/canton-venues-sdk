@@ -15,8 +15,10 @@ price for the token (tokens.json, liquidity-weighted across venues): 0.98 means 
   and when, from ticks that read the deep venues; the record lives in the state directory
   (``WorstRecord``).
 
-A pool marked not trading is no market here. Read by lending, vault and risk tools that need to know
-what collateral sells for on Canton, not only what it is quoted at.
+A pool marked not trading is no market here, nor is an order book with a side that shows more of a
+token than its own registry says exists (``over_supply`` in pools.json, supply.py): what it can fill
+is unknown, so it is listed in ``left_out`` with its supplies instead of being counted. Read by lending,
+vault and risk tools that need to know what collateral sells for on Canton, not only what it is quoted at.
 """
 
 from __future__ import annotations
@@ -109,10 +111,24 @@ def _r(x: Decimal | None) -> float | None:
     return None if x is None else round(float(x), 6)
 
 
+def backed(raw: dict) -> tuple[dict, list[dict]]:
+    """pools.json without the order books that show more than exists on a side, and those books."""
+    kept, left_out = {}, []
+    for base, by_market in (raw.get("books") or {}).items():
+        for name, d in by_market.items():
+            if d.get("over_supply"):
+                left_out.append({"token": base, "venue": d["venue"], "market": name,
+                                 "sides": d["over_supply"], "supply": d.get("supply") or {}})
+            else:
+                kept.setdefault(base, {})[name] = d
+    return {**raw, "books": kept}, left_out
+
+
 def build(raw: dict, tokens: list[dict], now: int) -> dict:
     """exit.json for this tick (``raw`` is pools.json as written, ``tokens`` tokens.json's list)."""
     prices = {t["key"]: t for t in tokens if t.get("price_usd")}
     dollar_usd = Decimal(str((prices.get(DOLLAR) or {}).get("price_usd") or 1))
+    raw, left_out = backed(raw)
     rows, hops = [], m.venue_hops(raw)
     cc = {"key": m.CC, "symbol": "CC", "price_usd": raw["cc_usd"]}
     for t in [cc] + [t for t in tokens if t["key"] != DOLLAR]:
@@ -124,7 +140,7 @@ def build(raw: dict, tokens: list[dict], now: int) -> dict:
     rows.sort(key=lambda x: -x["capacity_usd"]["2pct"]["all_venues"])
     return {"t": now, "sell_for": "USDCx", "ladder_usd": list(LADDER_USD),
             "bands": [f"{int(b * 100)}pct" for b in BANDS], "tokens": rows,
-            "not_trading": raw.get("not_trading") or []}
+            "not_trading": raw.get("not_trading") or [], "left_out": left_out}
 
 
 class WorstRecord:

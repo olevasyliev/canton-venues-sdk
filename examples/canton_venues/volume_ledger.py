@@ -38,7 +38,7 @@ DAY = 86400
 DAYS = 30
 AGREE = 0.05
 # a venue's own day record (weekly/days.json), by our slug
-OWN_DAY = {"temple", "cantex"}
+OWN_DAY = {"temple", "cantex", "rocky"}
 SOURCES = {
     "venue_day": "the venue's own record of that UTC day",
     "venue_24h": "our reading of the venue's own rolling 24-hour volume just after midnight UTC",
@@ -47,7 +47,13 @@ SOURCES = {
 # where a venue's own day record comes from, as the ledger says it
 OWN_SOURCE = {"temple": "Temple's settled volume for the day",
               "cantex": "Cantex's volume in CC for the day, at the mean of our CC price readings that day",
-              "tradecraft": "Tradecraft's hourly volume history, summed into the day"}
+              "tradecraft": "Tradecraft's hourly volume history, summed into the day",
+              "rocky": "Rocky's daily candles over every spot book it lists or listed, from 20 Oct 2026 (its "
+                       "candles for 16-19 Oct, around an outage, disagree with its own 24-hour counter)"}
+# what a reader needs to know before comparing a venue's figures
+NOTES = {"pool-party": "Pool Party's own 24-hour headline and the outside record add up both sides of every "
+                       "swap; our reading counts the CC side of swaps in its CC pools only, so it reads lower "
+                       "by design."}
 OUTSIDE_FINAL_S = 6 * 3600  # the aggregator's point for a closed day is final this long after (weekly.final_after)
 READING_WINDOW_S = 3600     # our first reading within this of 00:00 UTC stands for the day that closed
 COUNTS_FILE = "volume_counts.json"  # in the state directory, beside the web root
@@ -137,7 +143,7 @@ def build(hist: dict, cache: dict, now: int, venues: list[dict]) -> dict:
         if not any(r["usd"] for r in rows):
             continue
         out_venues.append({"slug": v["slug"], "name": v["name"], "own_record": OWN_SOURCE.get(v["slug"]),
-                           "days": rows})
+                           **({"note": NOTES[v["slug"]]} if v["slug"] in NOTES else {}), "days": rows})
     by_day = []
     for i, t in enumerate(days):
         have = [(v["name"], v["days"][i]["usd"]) for v in out_venues if v["days"][i]["usd"]]

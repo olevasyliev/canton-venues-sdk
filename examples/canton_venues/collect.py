@@ -42,6 +42,7 @@ import exit_cost
 import httpx
 import market_archive
 import model as m
+import supply
 import venue_history
 import venue_pages
 from model import CC, VenuePool
@@ -77,6 +78,8 @@ VOLUME_MAX_AGE_S = 3600
 LLAMA_MAX_AGE_S = 6 * 3600
 # Temple's row reads "down" once its keyless settled volume has not been read for this long
 TEMPLE_MAX_AGE_S = 45 * 60
+# each token's total supply is read from its registry this often (supply.py)
+SUPPLY_EVERY_S = 3600
 # Cantex's network fee per pair from the quote check (quotecheck.py, hourly) stands this long
 PAIR_FEE_MAX_AGE_S = 3 * 3600
 HISTORY_KEEP_S = 8 * 24 * 3600
@@ -113,6 +116,10 @@ STEPS = [
     {"id": "pool-tokens-in-venue", "keys": [], "premium": False, "drops_since": "cc-price-depth-weighted",
      "what": "A token in a pool is valued through its own venue's CC/USDCx pool (what it fetches in USDCx "
              "there), not at the market CC price; samples of every token but CC since the CC step are dropped."},
+    {"id": "book-over-supply", "keys": ["CBTC"], "premium": True,
+     "what": "An order book side that shows more of a token than its own registry says exists no longer "
+             "counts as depth: Rocky's CBTC book (about 237 BTC offered, 40.8 CBTC in existence) stopped "
+             "weighing in CBTC's price, depth and exit cost; its price still counts in every comparison."},
 ]
 # Alerts our own method made, taken out of the site's feed (founder 2026-10-15): (time, key). Between the
 # CC price step and the per-venue valuation fix on 14.10, pool tokens were valued at the market CC price
@@ -326,6 +333,14 @@ class Collector:
         if (inst := load_json(self.state / "cc_instrument.json", None)) and {"admin", "id"} <= set(inst):
             self.cc_inst = Instrument(inst["admin"], inst["id"])
         self.still: dict[tuple[str, str], dict] = {}
+        # each token's total supply from its own registry ({"t", "supply": {key: amount}}, supply.py), kept
+        # on disk so a restart does not count a book that shows more than exists until the next hourly read
+        self.supply: dict = load_json(self.state / "supply.json", {"t": 0, "supply": {}})
+        # this tick's book sides that show more than exists, by (venue, market): {"sides", "supply"}, out of
+        # depth and exit
+        self.over: dict[tuple[str, str], dict] = {}
+        # Rocky's 24h volume per market from its own hourly candles ({"t", "markets": {symbol: quote units}})
+        self.rocky_candles: dict = {}
 
     async def start(self) -> None:
         await self.cantex.connect()
@@ -434,6 +449,13 @@ class Collector:
             self.slow["tokens_info"] = await self.cantex.tokens()
         except Exception as exc:  # noqa: BLE001
             log.warning("tokens info: %s", exc)
+        if self.slow.get("tokens_info") and time.time() - self.supply.get("t", 0) >= SUPPLY_EVERY_S:
+            got = await supply.read(self._json, [(m.key(t["instrument_symbol"]), t["instrument_admin"],
+                                                  t["instrument_id"]) for t in self.slow["tokens_info"]])
+            if got:  # no registry answered: the last supplies stand (and one that did not keeps its own)
+                self.supply = {"t": int(time.time()), "supply": {**self.supply.get("supply", {}), **got}}
+                write_json(self.state / "supply.json", self.supply)
+        await self._rocky_volume()
         try:
             ids = {t["coingecko_id"] for t in self.slow.get("tokens_info", []) if t.get("coingecko_id")}
             if ids and "images" not in self.slow:
@@ -493,6 +515,44 @@ class Collector:
         log.warning("%s: %s", name, exc)
         self.live.discard(name)
 
+    async def _rocky_volume(self) -> None:
+        """Rocky's 24h volume per spot market from its own hourly candles, the last 24 (the newest still
+        filling). Its 24h ticker fell from $1.45M to $740 between 08:02 and 08:59 UTC on 2026-10-28 while
+        the candles matched its trades; a market whose candles fail keeps the ticker's figure."""
+        rocky = await self._venue("rocky")
+        if rocky is None:
+            return
+        try:
+            symbols = [mk.symbol for mk in await rocky.markets()]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("rocky candles: %r", exc)
+            return
+        got: dict[str, Decimal] = {}
+        for s in symbols:
+            try:
+                got[s] = sum((c["quote_volume"] for c in await rocky.volume_candles(s, "1h", 24)), Decimal(0))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("rocky candles %s: %r", s, exc)
+        if got:
+            self.rocky_candles = {"t": int(time.time()), "markets": got}
+
+    def _depth_backed(self, venue: str, symbol: str, book, base: str, quote: str, mid, quote_usd) -> Decimal:
+        """A book's depth within 1% (``m.book_depth_usd``) without the sides that show more than exists of
+        the token they deliver (``supply.over_supply``); those sides are noted in ``self.over``."""
+        have = self.supply.get("supply") or {}
+        over = supply.over_supply(book.bids, book.asks, have.get(base), have.get(quote))
+        if over:
+            self.over[(venue, symbol)] = {"sides": over, "supply": {base: have.get(base), quote: have.get(quote)}}
+        return m.book_depth_usd(() if "bids" in over else book.bids, () if "asks" in over else book.asks,
+                                mid, quote_usd)
+
+    def _book_json(self, b: m.BookVenue, quote_key: str) -> dict:
+        """``m.book_to_json`` plus the sides that show more than exists, with the supplies that said so."""
+        d = m.book_to_json(b, quote_key)
+        if over := self.over.get((b.venue, b.symbol)):
+            d["over_supply"], d["supply"] = over["sides"], over["supply"]
+        return d
+
     async def _rocky_spot(self, books, cc_usd, usdcx_usd) -> tuple[dict, dict, float | None]:
         """Rocky's dollar-quoted books: per token its quote over every book (depth-weighted, the deepest
         named), the books themselves ({token: {market: (book, quote key)}}, also the markets of the
@@ -535,7 +595,8 @@ class Collector:
                 found.setdefault(k, []).append({
                     "symbol": mk.symbol, "quote": ROCKY_QUOTES[quote],
                     "price_usd": book.mid_price * quote_usd[quote],
-                    "depth_usd": m.book_depth_usd(book.bids, book.asks, book.mid_price, quote_usd[quote]),
+                    "depth_usd": self._depth_backed("rocky", mk.symbol, book, k, ROCKY_QUOTES[quote],
+                                                    book.mid_price, quote_usd[quote]),
                     "spread_bps": r((book.best_ask.price / book.best_bid.price - 1) * 10_000, 2)})
             if tried and not found:  # every book failed or one-sided: Rocky was not read, not "priced"
                 raise ValueError(f"no usable book ({failed} of {tried} failed)")
@@ -549,6 +610,8 @@ class Collector:
                           "depth_usd": r(depth, 2), "books": len(bs)}
             volume = Decimal(0)
             books_usd: dict[str, float] = {}
+            fresh = time.time() - self.rocky_candles.get("t", 0) <= VOLUME_MAX_AGE_S
+            candles = self.rocky_candles.get("markets", {}) if fresh else {}
             for mk in markets:  # volume over every book, a CBTC-quoted one through the CBTC price
                 t, quote, k = tickers.get(mk.symbol), m.key(mk.quote), m.key(mk.base)
                 q_usd = quote_usd.get(quote) or (Decimal(str(out[quote]["price_usd"])) if quote in out else None)
@@ -560,10 +623,11 @@ class Collector:
                     q_usd = Decimal(1) if abs(implied - 1) <= Decimal("0.01") else None
                 if not (t and q_usd):
                     continue
-                volume += t.turnover_24h * q_usd
-                books_usd[mk.symbol] = float(t.turnover_24h * q_usd)
+                turnover = candles.get(mk.symbol, t.turnover_24h)  # its own candles, else the ticker
+                volume += turnover * q_usd
+                books_usd[mk.symbol] = float(turnover * q_usd)
                 if k in out:
-                    out[k]["volume_24h_usd"] = r((out[k].get("volume_24h_usd") or 0) + float(t.turnover_24h * q_usd), 2)
+                    out[k]["volume_24h_usd"] = r((out[k].get("volume_24h_usd") or 0) + float(turnover * q_usd), 2)
             self.fresh["rocky"] = int(time.time())
             self.rocky_books = books_usd
             return {k: {"rocky": v} for k, v in out.items()}, kept, float(volume)
@@ -602,7 +666,7 @@ class Collector:
                 if book.best_bid.price >= book.best_ask.price:  # a crossed book is no market
                     errors.append(f"{t.symbol}: crossed book")
                     continue
-                depth = m.book_depth_usd(book.bids, book.asks, book.mid_price, usdcx_usd)
+                depth = self._depth_backed("temple", t.symbol, book, k, USDCX, book.mid_price, usdcx_usd)
                 info = {"symbol": t.symbol, "quote": USDCX, "price_usd": r(book.mid_price * usdcx_usd, 8),
                         "depth_usd": r(depth, 2),
                         "spread_bps": r((book.best_ask.price / book.best_bid.price - 1) * 10_000, 2),
@@ -1202,6 +1266,7 @@ class Collector:
         stable = books.get(USDCX)
         if not stable:
             raise RuntimeError("no CC/USDCx pool on any venue")
+        self.over = {}
         t_ob, t_books, _, temple_cc_book = await self._temple_spot(books, usdcx_usd)
         # Temple's CC/USDCx book is one of the CC/USDCx markets: it weighs in the CC price by its depth
         # (as every token's price weighs its venues) and joins every CC/USDCx comparison (best
@@ -1281,9 +1346,10 @@ class Collector:
             "t": now, "cc_usd": float(cc_usd),
             "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()},
             # every dollar-quoted book by token and market (Rocky's in USDCx and USDC.B, Temple's in
-            # USDCx); CC's own book on Temple sits under CC, so the MCP quote prices CC/USDCx on it too
-            "books": {k: {name: m.book_to_json(b, q) for name, (b, q) in vs.items()} for k, vs in ob_books.items()}
-            | ({CC: {temple_cc_book.symbol: m.book_to_json(temple_cc_book, USDCX)}}
+            # USDCx); CC's own book on Temple sits under CC, so the MCP quote prices CC/USDCx on it too.
+            # ``over_supply``: its sides that show more than exists (supply.py), out of depth and exit
+            "books": {k: {name: self._book_json(b, q) for name, (b, q) in vs.items()} for k, vs in ob_books.items()}
+            | ({CC: {temple_cc_book.symbol: self._book_json(temple_cc_book, USDCX)}}
                if temple_cc_book is not None else {}),
             # pools of two other tokens a route can take (named, priced the venue's way: m.venue_hops)
             "other_pools": [{"venue": o["venue"], "a": m.key(o["a"]), "b": m.key(o["b"]), "ra": str(o["ra"]),

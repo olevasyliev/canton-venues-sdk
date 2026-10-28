@@ -1176,7 +1176,8 @@ def metric_note(m: str, f: dict) -> str:
         "tvl": "Pool liquidity: twice each CC pool's CC reserve, at our CC price; a pool of two other "
                "tokens at our prices of both (twice the one side we price).",
         "share": "Share: of the 24h spot volume of every Canton DEX with public market data.",
-        "depth": "Book depth: dollars resting within 1% of mid on both sides of the venue's public order book.",
+        "depth": "Book depth: dollars resting within 1% of mid on both sides of the venue's public order book. "
+                 "A side that shows more of a token than its own registry says exists is not counted.",
         "market": f"Largest market: {f['name']}'s own 24h volume per market.",
         "markets": f"Markets: every market {f['name']} reports as traded in the last 24 hours.",
         "oi": "Open interest: open contracts at mark price.",

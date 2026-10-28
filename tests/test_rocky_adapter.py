@@ -109,6 +109,24 @@ async def test_trades_newest_first_with_aggressor_side() -> None:
     assert newest.timestamp > older.timestamp
 
 
+async def test_volume_candles_oldest_first_in_quote_units() -> None:
+    # live CBTC-USDCX 1h klines, 2026-10-28 (newest first here to show the sort); the third will not parse
+    klines = [
+        [1793167200000, "80873.91", "80980", "80842.4", "80849.91", "0.0415", 1793170799999,
+         "3357.306023000000000000", 46, "0", "0", "0"],
+        [1793163600000, "80966.8", "80966.8", "80873.91", "80873.91", "0.0352", 1793167199999,
+         "2847.875733000000000000", 48, "0", "0", "0"],
+        [1793160000000, "81079.2"],
+    ]
+    seen: list = []
+    routes = {"/api/v3/exchangeInfo": SPOT_INFO, "/api/v3/klines": klines}
+    async with _adapter(routes, seen=seen) as rocky:
+        older, newer = await rocky.volume_candles("CBTC-USDCX", "1h", 3)
+    assert (older["t"], newer["t"]) == (1793163600, 1793167200)
+    assert newer["quote_volume"] == Decimal("3357.306023") and newer["trades"] == 46
+    assert seen[-1].params["interval"] == "1h" and seen[-1].params["limit"] == "3"
+
+
 async def test_empty_perp_funding_body_is_an_empty_list() -> None:
     routes = {"/fapi/v1/exchangeInfo": PERP_INFO, "/fapi/v1/fundingRate": ""}
     async with _adapter(routes, "perp") as rocky:

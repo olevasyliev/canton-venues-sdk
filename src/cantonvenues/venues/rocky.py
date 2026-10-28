@@ -167,6 +167,23 @@ class RockyAdapter(MarketDataAdapter):
         ]
         return sorted(trades, key=lambda t: t.timestamp, reverse=True)
 
+    async def volume_candles(self, symbol: str, interval: str = "1h", limit: int = 24) -> list[dict]:
+        """Oldest first, one per ``interval``: its open time (unix seconds), quote volume and trade count.
+
+        On 2026-10-28 the 24h ticker fell to $327 on CBTC-USDCX while its 1h and 1d klines still matched
+        ``/trades`` exactly (23-28 Oct), so volume is read here, not from the ticker.
+        """
+        raw = await self._get("/klines", {"symbol": symbol, "interval": interval, "limit": limit}) or []
+        if not isinstance(raw, list):
+            raise VenueRequestError(f"unexpected /klines response: {raw!r}")
+        out = []
+        for k in raw:
+            try:  # one candle that will not parse is left out, not the whole series
+                out.append({"t": int(k[0]) // 1000, "quote_volume": _dec(k[7]), "trades": int(k[8])})
+            except (IndexError, TypeError, ValueError, ArithmeticError) as exc:
+                log.warning("rocky: candle skipped: %r", exc)
+        return sorted(out, key=lambda c: c["t"])
+
     async def funding_history(self, symbol: str, limit: int = 50) -> list[FundingRate]:
         if self.market_type == SPOT:
             return []

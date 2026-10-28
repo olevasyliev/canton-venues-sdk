@@ -76,9 +76,19 @@ MIN_PRICE_HOURS = 22      # our CC price readings must cover this many of a day'
 LLAMA_SLUG = {"temple": "Temple", "cantex": "Cantex", "rocky": "Rocky Exchange Spot", "pool-party": "Pool Party"}
 # where a day's figure came from, as the page says it
 SOURCE = {"temple": "Temple's own settled volume", "cantex": "Cantex's own volume in CC, at our CC price that day",
+          "rocky": "Rocky's own daily candles, every market",
           "tradecraft": "Tradecraft's own hourly volume history", "reading": "our reading of its 24-hour volume "
           "just after midnight UTC", "defillama": "an outside daily record of the closed day (small print)"}
-OWN_DAY = {"temple", "cantex"}  # venues whose own API answers for an exact past day
+OWN_DAY = {"temple", "cantex", "rocky"}  # venues whose own API answers for an exact past day
+# Rocky's daily candles are its day record from 20 Oct 2026: they matched the outside record to 0.01%
+# on most days from 30 Sep, but for 16-19 Oct (its API answered nobody from 18 Oct 01:53 to 20 Oct 04:29
+# UTC) they read $2.2M-$13.9M against $0.7M-$4.3M from its own 24h counter, its two CBTC books showing
+# the same volume to within $1K. From 2026-10-28 its 24h counter is the broken one ($740 against $766K).
+ROCKY = "https://api.rocky.exchange/api/v3"
+ROCKY_DAY_FROM = 1792454400  # 2026-10-20 00:00 UTC
+# books Rocky no longer lists whose candles still answer (USDC.B left its market list 26 Oct ~08:44 UTC)
+ROCKY_PAST = ("CBTC-USDCB", "CETH-USDCB", "CETH-CBTC")
+ROCKY_DOLLARS = ("USDCX", "USDM1", "USDCB")  # quotes counted at $1, as every outside record does
 
 
 # === the venues' own day records =============================================
@@ -110,9 +120,42 @@ def own_day(get, slug: str, t: int) -> dict:
         return {"usd": float(raw["total_volume_usd"]), "trades": None if n is None else int(n),
                 "markets": {x["symbol"]: float(x["quote_volume"]) for x in rows},
                 "market_trades": {x["symbol"]: int(x.get("trade_count") or 0) for x in rows}}
+    if slug == "rocky":
+        return rocky_day(get, t)
     raw = _get_twice(get, CANTEX, params)["data"]
     n = raw.get("swap_count")
     return {"cc": float(raw["volume_cc"]), "trades": None if n is None else int(float(n))}
+
+
+def rocky_day(get, t: int) -> dict:
+    """Rocky's day from its own 1d candle of every spot book it lists and the ones it delisted
+    (``ROCKY_PAST``): dollar-quoted books at $1, a CBTC-quoted one at that day's CBTC-USDCX average.
+    Any book that does not answer fails the day, which is read again on the next run."""
+    if t < ROCKY_DAY_FROM:
+        raise ValueError("Rocky's candles are its record from 20 Oct 2026 only")
+    listed = [s["symbol"] for s in (_get_twice(get, f"{ROCKY}/exchangeInfo", {}) or {}).get("symbols") or []]
+    candles = {}
+    for sym in dict.fromkeys(listed + list(ROCKY_PAST)):
+        k = _get_twice(get, f"{ROCKY}/klines", {"symbol": sym, "interval": "1d", "startTime": t * 1000,
+                                               "endTime": (t + DAY) * 1000 - 1, "limit": 1})
+        if not isinstance(k, list):
+            raise ValueError(f"{sym}: unexpected candles {str(k)[:80]}")
+        if k and int(k[0][0]) // 1000 == t:
+            candles[sym] = k[0]
+    btc = candles.get("CBTC-USDCX")
+    btc_usd = float(btc[7]) / float(btc[5]) if btc and float(btc[5]) else None
+    usd, trades, markets = 0.0, 0, {}
+    for sym, c in candles.items():
+        quote = sym.rpartition("-")[2]
+        rate = 1.0 if quote in ROCKY_DOLLARS else btc_usd if quote == "CBTC" else None
+        if rate is None:
+            if float(c[7]):
+                raise ValueError(f"{sym}: no dollar value for its quote")
+            continue
+        markets[sym] = float(c[7]) * rate
+        usd += markets[sym]
+        trades += int(c[8])
+    return {"usd": usd, "trades": trades, "markets": markets}
 
 
 def cc_price_day(history: dict, t: int) -> float | None:
@@ -147,6 +190,8 @@ def fetch_days(cache: dict, history: dict, now: int, get=http_get, counts: dict 
                 continue
             if have is None and t < end - BACKFILL_DAYS * DAY:
                 continue  # the ledger fills in days the card read, it does not reach further back
+            if slug == "rocky" and t < ROCKY_DAY_FROM:
+                continue  # its candles are no record before then (ROCKY_DAY_FROM)
             try:
                 rec = own_day(get, slug, t)
                 if counts is not None:

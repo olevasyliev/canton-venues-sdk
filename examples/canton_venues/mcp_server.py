@@ -184,7 +184,9 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
     same comparison as the site's best execution, at any size. Pool fees, book fees and price impact are
     included; `after_network_fee` also takes off the venue's per-trade network fee on each swap (the fee
     table, with which fees are measured, documented or assumed, is in `network_fees`). A pool whose
-    reserves have stood still while its price left the market is no market here (`not_trading`)."""
+    reserves have stood still while its price left the market is no market here (`not_trading`). A
+    venue whose route takes an order book that shows more of a token than exists (a side larger than its
+    registry's total supply) carries `book_shows_more_than_exists`: its price, not a size it can fill."""
     raw = load("pools")
     cc_usd = Decimal(str(raw["cc_usd"]))
     if (amount is None) == (amount_usd is None):
@@ -209,16 +211,23 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
     with m.fees_from((load("execution") or {}).get("network_fee")):
         quotes = m.venue_quotes(raw, s, b, Decimal(str(amount)), out_usd)
         fee_table = m.fee_table_json()
+    # order books with a side that shows more of a token than its registry says exists (supply.py): their
+    # price is used, but what they can fill is unknown, so a quote through one says so
+    over = {(d["venue"], name): d for vs in (raw.get("books") or {}).values() for name, d in vs.items()
+            if d.get("over_supply")}
     by_venue = {}
     for v, (got, path, fee) in quotes.items():
         if got <= 0:
             by_venue[v] = {"amount_out": None, "note": "too thin for this size"}
             continue
         via = m.via(path)
+        shown = [{"market": h.market, "sides": over[(v, h.market)]["over_supply"],
+                  "supply": over[(v, h.market)].get("supply")} for h in path if (v, h.market) in over]
         by_venue[v] = {"amount_out": _r(got, 10), "swaps": len(path),
                        **({"via": names.get(via, via)} if via else {}),
                        "markets": [h.market or f"{names.get(h.a, h.a)}/{names.get(h.b, h.b)} pool" for h in path],
-                       "after_network_fee": _r(got - fee, 10) if fee is not None else None}
+                       "after_network_fee": _r(got - fee, 10) if fee is not None else None,
+                       **({"book_shows_more_than_exists": shown} if shown else {})}
     if not by_venue:
         raise ToolError(f"no venue trades {sell!r} for {buy!r} in one or two swaps; call list_tokens() for symbols")
     filled = {v: q for v, q in by_venue.items() if q["amount_out"]}
