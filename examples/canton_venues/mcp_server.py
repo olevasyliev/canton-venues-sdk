@@ -285,8 +285,8 @@ def venues() -> dict:
 
 @server.tool(title="Perpetual futures")
 def perps(base: str | None = None) -> dict:
-    """Perp markets on Rocky and Ekiden: price, basis to the outside spot price, funding, spread,
-    open interest and 24h volume. base filters by asset, e.g. BTC, ETH or CC."""
+    """Perp markets on Rocky, Ekiden and Canborsa: price, basis to the outside spot price, funding,
+    spread, open interest and 24h volume where the venue publishes them. base filters by asset, e.g. BTC, ETH or CC."""
     d = load("perps")
     rows = [x for x in d["markets"] if base is None or x["base"].upper() == base.upper()]
     return {"as_of": d["t"], "markets": rows}

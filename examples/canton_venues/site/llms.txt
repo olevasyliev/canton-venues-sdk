@@ -2,7 +2,7 @@
 
 > Live, read-only market data for the trading venues on the Canton Network: the same trade compared across venues at four sizes after each venue's network fee, Canton prices against outside markets, cross-venue spreads, pools and perps. Open JSON API and an MCP server, no key, no sign-up, cross-origin enabled.
 
-Venues read: Temple, Cantex, Tradecraft, OneSwap, Pool Party, Rocky (spot and perps), Ekiden (perps). Snapshots refresh every five minutes. Nothing is signed or executed. Source: https://github.com/olevasyliev/canton-venues-sdk (open source).
+Venues read: Temple, Cantex, Tradecraft, OneSwap, Pool Party, Rocky (spot and perps), Ekiden (perps), Canborsa (perps). Snapshots refresh every five minutes. Nothing is signed or executed. Source: https://github.com/olevasyliev/canton-venues-sdk (open source).
 
 ## JSON API
 
@@ -19,7 +19,7 @@ Base URL: https://cantonvenues.com/api/v1/ (opening it returns this endpoint lis
 - [venue_history.json](https://cantonvenues.com/api/v1/venue_history.json): per venue: daily volume and hourly readings
 - [lp.json](https://cantonvenues.com/api/v1/lp.json): pools: liquidity, 24h volume, fee, fee APR
 - [pools.json](https://cantonvenues.com/api/v1/pools.json): raw reserves of every CC pool, the pools of two other tokens a route can take, and order-book levels per venue, the inputs every quote is computed from; `not_trading` lists pools whose reserves stood still while their price left the market (in no price or comparison)
-- [perps.json](https://cantonvenues.com/api/v1/perps.json): perp markets on Rocky and Ekiden: price, basis, funding, spread
+- [perps.json](https://cantonvenues.com/api/v1/perps.json): perp markets on Rocky, Ekiden and Canborsa: price, basis, funding, spread
 - [history.json](https://cantonvenues.com/api/v1/history.json): eight days of prices and premiums in five-minute steps (large, ~1.2 MB)
 - [desk.json](https://cantonvenues.com/api/v1/desk.json): the paper desk's full record: router and arbitrage simulated on live quotes
 - [quotecheck.json](https://cantonvenues.com/api/v1/quotecheck.json): the hourly check of our pool math against the venues' own quote engines (Tradecraft, Cantex, OneSwap): every trade compared, the largest gap, and Cantex's network fee per pair
@@ -49,7 +49,7 @@ Tools:
 - alerts(limit=20): peg breaks, premiums over 1%, hourly moves over 5%, spreads that clear their costs; newest last
 - pools(sort_by="tvl", limit=20): CC pools on every AMM with liquidity, 24h volume, fee and fee APR, and any marked not trading; sort_by tvl, volume or apr
 - venues(): every Canton venue: type, 24h volume, and whether it is priced live, volume only, or unreadable
-- perps(base=None): perp markets on Rocky and Ekiden: price, basis, funding, spread, open interest; base e.g. BTC, ETH or CC
+- perps(base=None): perp markets on Rocky, Ekiden and Canborsa: price, basis, funding, spread, open interest; base e.g. BTC, ETH or CC
 - exit_cost(symbol, amount_usd=None): what selling the token for USDCx nets at sizes from $1K to $1M, the largest sale within 1%, 2% and 5% per venue and in all, the worst share since the record began; with amount_usd, that sale priced now
 - check_trade(sell, buy, amount_in, amount_out, time, venue=None): a trade you made against every venue at that time (same as /api/v1/check)
 

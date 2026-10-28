@@ -107,6 +107,16 @@ STYLES = {
         "head": "Montserrat-Bold", "label": "Montserrat-SemiBold", "num": "Montserrat-Bold",
         "body": "Montserrat-Light", "head_case": None, "label_case": None, "track": 0, "radius": 10, "border": 1,
     },
+    "canborsa": {
+        "source": "https://app.canborsa.com (CSS --background #050505, --card #0a0908, --foreground #f5ead4, "
+                  "--muted-foreground #c9a476, --primary #e5a13a, --border #bf772540 on the page; its face is "
+                  "Plus Jakarta Sans, Inter stands in)",
+        "bg": "#050505", "ink": "#f5ead4", "muted": "#c9a476", "accent": "#e5a13a", "rule": "#33210d",
+        "tile": "#0a0908", "tile_edge": "#33210d", "tile_label": "#c9a476", "tile_ink": "#f5ead4",
+        "tile_note": "#c9a476", "up": "#e5a13a",
+        "head": "Inter-Bold", "label": "Inter-SemiBold", "num": "Inter-Bold", "body": "Inter-Regular",
+        "head_case": None, "label_case": "upper", "track": 0.06, "radius": 14, "border": 1,
+    },
 }
 
 

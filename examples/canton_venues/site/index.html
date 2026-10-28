@@ -42,6 +42,7 @@
   --oneswap: #e5484d;
   --poolparty: #d6409f;
   --temple: #a07b3c;
+  --canborsa: #b5651d;
   --hm-up: #16c784;
   --hm-down: #ea3943;
   --hm-flat: #c5ccd6;
@@ -67,6 +68,7 @@
   --oneswap: #f2555a;
   --poolparty: #e66bb4;
   --temple: #c9a25e;
+  --canborsa: #d9823b;
   --hm-up: #16c784;
   --hm-down: #ea3943;
   --hm-flat: #323546;
@@ -381,7 +383,7 @@ body:not(.tv) #tokenview { display: none; }
       Canton Venues
     </a>
     <nav class="nav" id="nav" aria-label="Sections">
-      <a href="#tokens">Tokens</a><div class="dd" id="ddvenues"><button class="ddb" type="button" aria-expanded="false" aria-controls="ddmenu">Venues<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="ddm" id="ddmenu"><a class="all" href="/venues/">All venues</a><a href="/venues/temple/">Temple</a><a href="/venues/cantex/">Cantex</a><a href="/venues/rocky/">Rocky</a><a href="/venues/tradecraft/">Tradecraft</a><a href="/venues/ekiden/">Ekiden</a><a href="/venues/oneswap/">OneSwap</a><a href="/venues/pool-party/">Pool Party</a></div></div><a href="/weekly/">This week</a><a href="#execution">Execution</a><a href="#api">API &amp; MCP</a><a href="/build/">Build</a><a class="sec" href="#premium">Premium</a><a class="sec" href="#heatmap">Heatmap</a><a class="sec" href="#perps">Perps</a><a class="sec" href="#yields">Pools</a><a class="sec" href="#study">Spreads</a><a class="sec" href="#desk">Paper desk</a><a class="sec" href="#alerts">Alerts</a><a class="sec" href="#contact">Contact</a>
+      <a href="#tokens">Tokens</a><div class="dd" id="ddvenues"><button class="ddb" type="button" aria-expanded="false" aria-controls="ddmenu">Venues<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="ddm" id="ddmenu"><a class="all" href="/venues/">All venues</a><a href="/venues/temple/">Temple</a><a href="/venues/cantex/">Cantex</a><a href="/venues/rocky/">Rocky</a><a href="/venues/tradecraft/">Tradecraft</a><a href="/venues/ekiden/">Ekiden</a><a href="/venues/oneswap/">OneSwap</a><a href="/venues/pool-party/">Pool Party</a><a href="/venues/canborsa/">Canborsa</a></div></div><a href="/weekly/">This week</a><a href="#execution">Execution</a><a href="#api">API &amp; MCP</a><a href="/build/">Build</a><a class="sec" href="#premium">Premium</a><a class="sec" href="#heatmap">Heatmap</a><a class="sec" href="#perps">Perps</a><a class="sec" href="#yields">Pools</a><a class="sec" href="#study">Spreads</a><a class="sec" href="#desk">Paper desk</a><a class="sec" href="#alerts">Alerts</a><a class="sec" href="#contact">Contact</a>
     </nav>
     <a class="tg" href="https://t.me/cantonvenues" target="_blank" rel="noopener" aria-label="Telegram channel"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.7.8l-4.8-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.3-.1-.5-.6-.2L6.5 13.2 1.8 11.7c-1-.3-1-1 .2-1.5L20.5 3c.9-.3 1.6.2 1.4 1.3z"/></svg><span>Telegram</span></a>
     <a class="tg x" href="https://x.com/cantonvenues" target="_blank" rel="noopener" aria-label="Canton Venues on X"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></a>
@@ -447,7 +449,7 @@ body:not(.tv) #tokenview { display: none; }
 
   <section class="block" id="perps">
     <h2>Perpetuals</h2>
-    <p class="sub">Every perp market on Rocky and Ekiden. Basis is the perp price over the outside spot price (CoinGecko for BTC and ETH; gold and silver against Ekiden's spot index; CC against its Canton price). Ekiden basis uses its mark price.</p>
+    <p class="sub">Every perp market on Rocky and Ekiden, and Canborsa's six USDCx markets with an outside spot price. Basis is the perp price over the outside spot price (CoinGecko for BTC, ETH and HYPE; gold and silver against Ekiden's spot index; CC against its Canton price). Ekiden basis uses its mark price. Funding is each venue's rate per its own period. Canborsa publishes no 24h volume.</p>
     <div class="panel"><div class="tablewrap"><table id="perptable"></table></div></div>
   </section>
 
@@ -514,14 +516,14 @@ body:not(.tv) #tokenview { display: none; }
   <footer class="foot">
     <div><h4>Canton Venues</h4><p>Built by <a href="https://github.com/olevasyliev">Oleksii</a> on <a href="https://github.com/olevasyliev/canton-venues-sdk">Canton Venues SDK</a>, open source. Read-only: nothing here is signed or executed.</p><p><a href="https://t.me/cantonvenues">Telegram channel</a> · <a href="https://x.com/cantonvenues">X</a> · <a href="#contact">Contact</a></p><p id="updated"></p></div>
     <div><h4>Method</h4><p>Tokens are matched by Canton instrument (issuer party and id); Pool Party publishes no issuer, so its tokens match by instrument id. Cantex and Tradecraft are priced from live reserves with each venue's own formula, OneSwap and Pool Party from reserves as constant-product pools (their fee and curve as documented or, for Pool Party, as CCTools reports), Temple and Rocky from their order books. A token's Canton price weighs each venue by the dollars it can trade within 1% of its own mid, and so does Canton Coin's, across every CC/USDCx pool and Temple's CC/USDCx order book (since 14 Oct 2026; before, the pools alone). For an order book, liquidity is the dollars resting within 1% of mid. A 24h or 7d change needs a price from the last two hours; a market that stopped trading shows none.</p></div>
-    <div><h4>Data</h4><p>Temple's API (account key), and the Cantex, Tradecraft, OneSwap, Pool Party, Rocky and Ekiden public APIs, DefiLlama for Canton's TVL, CoinGecko for outside prices and logos, Ekiden's index for gold and silver spot. Temple's volume comes from its own public settled-volume route.</p></div>
+    <div><h4>Data</h4><p>Temple's API (account key), the Cantex, Tradecraft, OneSwap, Pool Party, Rocky and Ekiden public APIs, Canborsa's web app's public routes, DefiLlama for Canton's TVL, CoinGecko for outside prices and logos, Ekiden's index for gold and silver spot. Temple's volume comes from its own public settled-volume route.</p></div>
   </footer>
 </main>
 
 <script>
 const API = "api/v1/";
-const V = { cantex: "Cantex", tradecraft: "Tradecraft", rocky: "Rocky", rocky_perp: "Rocky perps", ekiden: "Ekiden", oneswap: "OneSwap", poolparty: "Pool Party", temple: "Temple" };
-const VC = { cantex: "var(--cantex)", tradecraft: "var(--trade)", rocky: "var(--rocky)", rocky_perp: "var(--rocky)", ekiden: "var(--ekiden)", oneswap: "var(--oneswap)", poolparty: "var(--poolparty)", temple: "var(--temple)" };
+const V = { cantex: "Cantex", tradecraft: "Tradecraft", rocky: "Rocky", rocky_perp: "Rocky perps", ekiden: "Ekiden", oneswap: "OneSwap", poolparty: "Pool Party", temple: "Temple", canborsa: "Canborsa" };
+const VC = { cantex: "var(--cantex)", tradecraft: "var(--trade)", rocky: "var(--rocky)", rocky_perp: "var(--rocky)", ekiden: "var(--ekiden)", oneswap: "var(--oneswap)", poolparty: "var(--poolparty)", temple: "var(--temple)", canborsa: "var(--canborsa)" };
 const S = { size: "liq", color: "change_24h", pair: "USDCX", side: "sell", sort: "liquidity_usd", dir: "desc", lpSort: "tvl_usd", lpAll: false };
 try { Object.assign(S, JSON.parse(localStorage.getItem("venues-view2") || "{}")); } catch (e) {}
 const D = {};
@@ -774,7 +776,7 @@ function bindPremTip() {
 
 /* ---------- venues ---------- */
 // venues with their own page (venue_pages.py); Rocky's perp row opens Rocky's page
-const VP = { temple: "temple", cantex: "cantex", tradecraft: "tradecraft", rocky: "rocky", rocky_perp: "rocky", ekiden: "ekiden", oneswap: "oneswap", poolparty: "pool-party" };
+const VP = { temple: "temple", cantex: "cantex", tradecraft: "tradecraft", rocky: "rocky", rocky_perp: "rocky", ekiden: "ekiden", oneswap: "oneswap", poolparty: "pool-party", canborsa: "canborsa" };
 const VST = { priced: "Priced", volume: "Volume only", next: "Next", waiting: "Waiting on API", closed: "Closed data", testnet: "Testnet", down: "Unreachable" };
 function renderVenues() {
   const d = D.venues, rows = d.venues || [];
@@ -802,7 +804,7 @@ function renderPerps() {
       <td class="num">${px(x.mark || x.last)}</td><td class="num ${tone(x.basis)}">${pct(x.basis)}</td>
       <td class="num hide-sm">${x.funding_rate == null ? "–" : pct(x.funding_rate, 4)}</td>
       <td class="num hide-sm">${x.spread_bps == null ? "one-sided" : x.spread_bps < 1 ? "<0.01%" : (x.spread_bps / 100).toFixed(2) + "%"}</td>
-      <td class="num hide-sm">${x.open_interest_usd ? money(x.open_interest_usd) : "–"}</td><td class="num">${money(x.turnover_24h_usd || 0)}</td></tr>`).join("") + "</tbody>";
+      <td class="num hide-sm">${x.open_interest_usd ? money(x.open_interest_usd) : "–"}</td><td class="num">${x.turnover_24h_usd == null ? "n/a" : money(x.turnover_24h_usd)}</td></tr>`).join("") + "</tbody>";
 }
 
 /* ---------- alerts ---------- */
@@ -1087,7 +1089,7 @@ function renderAPI() {
     ["premium", "Canton price against outside markets and pegs"], ["execution", "Every venue at four sizes, both directions; order-book tokens also in dollars"],
     ["scan", "Every cross-venue round trip at its best size, after costs"], ["desk", "The paper desk's full record"],
     ["lp", "Pool liquidity, volume and fee APR"], ["venues", "Every Canton venue: type, 24h volume, what we read"],
-    ["perps", "Perp markets on Rocky and Ekiden: price, basis, funding, spread"], ["spreads", "Daily spread study: how long cross-venue spreads live"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"], ["venue_history", "Per venue: daily volume and our hourly readings"], ["quotecheck", "Our pool math against the venues' own quotes, hourly, every trade"], ["exit", "What selling each token for dollars nets, $1K to $1M, and the largest sale within 1%, 2%, 5%"], ["volume", "Daily volume per venue, 30 days, each day's records side by side"]];
+    ["perps", "Perp markets on Rocky, Ekiden and Canborsa: price, basis, funding, spread"], ["spreads", "Daily spread study: how long cross-venue spreads live"], ["alerts", "Every alert fired, newest last"], ["history", "Eight days of prices and premiums, five-minute steps"], ["venue_history", "Per venue: daily volume and our hourly readings"], ["quotecheck", "Our pool math against the venues' own quotes, hourly, every trade"], ["exit", "What selling each token for dollars nets, $1K to $1M, and the largest sale within 1%, 2%, 5%"], ["volume", "Daily volume per venue, 30 days, each day's records side by side"]];
   const base = location.origin + location.pathname.replace(/[^/]*$/, "") + API;
   $("apilist").innerHTML = eps.map(([n, d]) => `<div><a href="${API}${n}.json">/api/v1/${n}.json</a><span>${d}</span></div>`).join("");
   $("curl").textContent = `curl -s ${base}premium.json | jq '.assets[] | {symbol, premium}'`;

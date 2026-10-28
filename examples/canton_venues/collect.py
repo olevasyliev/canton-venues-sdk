@@ -8,6 +8,7 @@ Sources, all public, no keys:
   OneSwap     pool reserves                          (OneSwapPublicData)
   Pool Party  pool reserves and volume               (PoolPartyPublicData)
   Temple      settled volume per market, no key      (TempleAdapter)
+  Canborsa    perp prices, funding, 30-day volume    (CanborsaPublicData)
   DefiLlama   Canton chain TVL, and DEX volume as an internal cross-check
   CoinGecko   outside prices for the premium board (gold and silver: Ekiden's spot index)
 
@@ -47,6 +48,8 @@ from model import CC, VenuePool
 from publish_guard import PublishGuard
 
 from cantonvenues import (
+    BookLevel,
+    CanborsaPublicData,
     CantexPublicData,
     EkidenAdapter,
     Instrument,
@@ -129,6 +132,12 @@ UNNAMED = "token not named by any venue we price"
 SECOND_POOL = "a second pool for the same token"
 # Rocky quote asset (upper-cased; the venue mixes cases) -> our token key
 ROCKY_QUOTES = {"USDCX": USDCX, "USDC.B": "USDC.B"}
+# Canborsa's perp markets in the perps table -> the base as the other perp venues name it: its USDCx
+# markets of the assets with an outside spot price for the basis (``PERP_SPOT``, gold and silver
+# against Ekiden's spot index). It lists about 87 assets against four dollar tokens; the rest are
+# stocks and indices with no Canton reference, counted in its 30-day volume only.
+CANBORSA_PERPS = {"cc/usdcx": "CC", "btc/usdcx": "BTC", "eth/usdcx": "ETH", "hype/usdcx": "HYPE",
+                  "gold/usdcx": "XAU", "silver/usdcx": "XAG"}
 
 # Every Canton trading venue we know of and what we read from it (research 2026-10-03,
 # canton/docs/2026-10-03-venue-coverage-research.md in the private workspace). Volumes are
@@ -150,8 +159,11 @@ VENUES = [
      "note": "Reserves and volume from the public API. CC pairs priced; fee (0.30%) from CCTools."},
     {"id": "oneswap", "name": "OneSwap", "kind": "Spot AMM", "status": "priced",
      "note": "Reserves from the public API. CC pairs priced. Volume is not published."},
-    {"id": "canborsa", "name": "Canborsa", "kind": "Perpetuals", "status": "waiting",
-     "note": "Only the web app's internal API; a public API is on their Q4 roadmap."},
+    # read through its web app's public routes since 2026-10-28 (no documented API yet; one is on its Q4
+    # roadmap); before that "waiting"
+    {"id": "canborsa", "name": "Canborsa", "kind": "Perpetuals", "status": "priced",
+     "note": "Perp prices, funding and 30-day volume from its web app's public routes. "
+             "No 24h volume is published."},
     {"id": "silvana", "name": "Silvana", "kind": "Private order book", "status": "closed",
      "note": "Prices need a KYC-onboarded account."},
     {"id": "ibex", "name": "Ibex", "kind": "Perpetuals", "status": "testnet", "note": "Testnet only."},
@@ -256,7 +268,8 @@ class Collector:
         # order-book venues: optional, each fails alone and reconnects on a later tick
         self.optional = {"rocky": RockyAdapter(), "rocky_perp": RockyAdapter("perp"),
                          "ekiden": EkidenAdapter(), "oneswap": OneSwapPublicData(),
-                         "poolparty": PoolPartyPublicData(), "temple": TempleAdapter()}
+                         "poolparty": PoolPartyPublicData(), "temple": TempleAdapter(),
+                         "canborsa": CanborsaPublicData()}
         self.live: set[str] = set()
         # core venue -> unix time of the first failed read in a row; empty when both answered
         self.down: dict[str, int] = {}
@@ -265,6 +278,7 @@ class Collector:
         self.cc_usd_last = Decimal(0)
         self.temple_priced = False
         self.rocky_books: dict[str, float] = {}  # each Rocky spot book's 24h turnover in dollars, this tick
+        self.canborsa_30d: float | None = None  # Canborsa's own 30-day perp volume, every market, this tick
         self.metal_spot: dict[str, Decimal] = {}  # gold and silver spot this tick (METALS), when usable
         self.metal_seen: dict[str, tuple[Decimal, int]] = {}  # each index's last value and since when
         # each outside source's last good read (unix time), for summary.json and the watchdog; carried
@@ -434,7 +448,9 @@ class Collector:
             log.warning("coingecko images: %s", exc)
 
     async def _venue(self, name: str):
-        """An optional adapter, connected; None while its venue is unreachable."""
+        """An optional adapter, connected; None while its venue is unreachable or not configured."""
+        if name not in self.optional:
+            return None
         if name not in self.live:
             try:
                 await self.optional[name].connect()
@@ -626,7 +642,8 @@ class Collector:
         return index
 
     async def _perps(self, gecko, cc_usd, now: int | None = None) -> list[dict]:
-        """Every perp market on Rocky and Ekiden, with its basis to the outside spot price."""
+        """Every perp market on Rocky and Ekiden and Canborsa's six USDCx markets with an outside spot price,
+        each with its basis to that price."""
         rows = []
         now = now or int(time.time())
         self.metal_spot = {}
@@ -673,7 +690,46 @@ class Collector:
                 self.fresh["ekiden"] = int(time.time())
             except Exception as exc:  # noqa: BLE001
                 self._drop("ekiden", exc)
+        rows += await self._canborsa_perps(spot)
         return sorted(rows, key=lambda x: -(x["turnover_24h_usd"] or 0))
+
+    async def _canborsa_perps(self, spot) -> list[dict]:
+        """Canborsa's USDCx perps with an outside spot price (``CANBORSA_PERPS``), after Ekiden so gold
+        and silver take this tick's spot index. Its price, bid and ask are the ones it quotes an order;
+        funding is its current hourly rate. Not published as depth: its execution depth runs to millions
+        a level on BTC and ETH (28.10: one level, $1.1M bid and $3.8M ask on BTC) while one order is capped
+        at $20K to $50K of position size (``maxAmountUSD``, its docs' "Order size limits"), so the dollars
+        "within 1%" would say nothing of what fills. It has no 24h volume or open interest; its 30-day
+        volume over every market is kept for its row."""
+        self.canborsa_30d = None
+        canborsa = await self._venue("canborsa")
+        if canborsa is None:
+            return []
+        try:
+            markets = await canborsa.markets()
+            funding = await canborsa.funding_rates()
+            listed = {mk.symbol: mk for mk in markets if mk.symbol in CANBORSA_PERPS}
+            prices, _ = await canborsa.stream(sorted(listed))
+            if not prices:
+                raise ValueError(f"no price from the socket for {len(listed)} markets")
+            read = []
+            for sym in sorted(listed):
+                p = prices.get(sym)
+                if p is None:
+                    continue
+                base = CANBORSA_PERPS[sym]
+                ref = self.metal_spot.get(base) if base in METALS else spot(base)
+                # only .price of a bid or ask is read; the quote carries no size
+                read.append(self._perp_row("canborsa", sym, base, "USDCx", p.price, None, None, funding.get(sym),
+                                           None, None, BookLevel(p.bid, Decimal(0)), BookLevel(p.ask, Decimal(0)),
+                                           float(ref) if ref is not None else None))
+            # its markets are quoted in four dollar tokens, each counted at $1 like every perp turnover
+            self.canborsa_30d = float(sum(mk.volume_30d for mk in markets))
+            self.fresh["canborsa"] = int(time.time())
+            return read
+        except Exception as exc:  # noqa: BLE001
+            self._drop("canborsa", exc)
+            return []
 
     @staticmethod
     def _perp_row(venue, symbol, base, quote, last, mark, index, funding, oi_usd, turnover,
@@ -795,8 +851,9 @@ class Collector:
 
     def _venues(self, cx_volume_usd, rocky_spot_vol, perps, now) -> dict:
         perp_vol: dict[str, float] = {}
-        for p in perps:
-            perp_vol[p["venue"]] = perp_vol.get(p["venue"], 0) + (p["turnover_24h_usd"] or 0)
+        for p in perps:  # a venue that publishes no 24h figure (Canborsa) has none, not $0
+            if p["turnover_24h_usd"] is not None:
+                perp_vol[p["venue"]] = perp_vol.get(p["venue"], 0) + p["turnover_24h_usd"]
         # a 24h volume read over an hour ago is unknown, not shown as current (it froze for days before
         # 2026-10-14 when one pool or market stopped answering)
         tc_vol = self.slow.get("tc_volume") if self._fresh("tc_volume", now) else None
@@ -826,6 +883,9 @@ class Collector:
                 rows[-1]["markets_24h"] = sorted(self.slow["temple_volume"])
                 # and each one's settled volume in its quote token, as Temple reports it
                 rows[-1]["markets_24h_usd"] = {k: r(x, 2) for k, x in sorted(self.slow["temple_volume"].items())}
+            if v["id"] == "canborsa" and self.canborsa_30d is not None:
+                # its own 30-day figure over every perp market, the only volume it publishes
+                rows[-1]["volume_30d_usd"] = r(self.canborsa_30d, 2)
             if v["id"] == "rocky" and rocky_spot_vol is not None and self.rocky_books:
                 # each spot book's turnover, in dollars the same way the venue total is
                 rows[-1]["markets_24h_usd"] = {k: r(x, 2) for k, x in sorted(self.rocky_books.items())}

@@ -30,6 +30,7 @@ Eight venues, four market structures, one client:
 | `OneSwapPublicData` | [OneSwap](https://oneswap.cc/) | spot AMM | keyless reserves, mainnet |
 | `PoolPartyPublicData` | [Pool Party](https://cantonwallet.com/) | spot AMM | keyless reserves and volume, mainnet |
 | `EkidenAdapter` | [Ekiden](https://ekiden.fi/) | perpetual futures | market data, mainnet (testnet available) |
+| `CanborsaPublicData` | [Canborsa](https://canborsa.com/) | perpetual futures | keyless markets, funding, prices and execution depth, mainnet (web app routes, undocumented) |
 | `DexRefAdapter` | [Canton DEX reference implementation](https://github.com/srikanth-bitdynamics/Canton-Dex-Reference-Implementation) | spot order book + RFQ | read + swap, its hosted testnet |
 
 `CantexAdapter` wraps the official
@@ -157,6 +158,8 @@ real response shapes captured from each venue.
   Party, per-pool volume) without a key, priced locally as constant product.
 - **Ekiden** moved to mainnet as the default on 2026-10-03 (live since 2026-09-08);
   the same routes answer there as on testnet.
+- **Canborsa** (mainnet, 2026-10-28) — perp markets, funding, 30-day volume, and
+  prices and execution depth from the socket its web app reads; no documented API yet.
 
 - **Cantex** (mainnet, 2026-07-17) — challenge-response auth, pools, quoting,
   and an executed swap with real funds: 10 CC sold for 1.2981357151 USDCx on

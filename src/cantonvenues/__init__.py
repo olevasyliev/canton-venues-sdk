@@ -25,6 +25,7 @@ from .core.venue import (
     VenueError,
     VenueRequestError,
 )
+from .venues.canborsa import CanborsaPublicData
 from .venues.cantex import CantexAdapter
 from .venues.cantex_public import CantexPublicData
 from .venues.ekiden import EkidenAdapter
@@ -69,6 +70,7 @@ __all__ = [
     "VenueError",
     "VenueAuthError",
     "VenueRequestError",
+    "CanborsaPublicData",
     "CantexAdapter",
     "CantexPublicData",
     "EkidenAdapter",

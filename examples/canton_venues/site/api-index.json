@@ -61,7 +61,7 @@
     {
       "name": "perps",
       "url": "https://cantonvenues.com/api/v1/perps.json",
-      "about": "perp markets on Rocky and Ekiden: price, basis, funding, spread"
+      "about": "perp markets on Rocky, Ekiden and Canborsa: price, basis, funding, spread"
     },
     {
       "name": "history",

@@ -66,6 +66,8 @@ VENUES = [
      "x": "Oneswapcc", "x_source": "founder, 2026-10-09"},
     {"slug": "pool-party", "name": "Pool Party", "rows": ["poolparty"], "site": "https://poolparty.fun",
      "x": "PoolPartyDEX", "x_source": "founder, 2026-10-09"},
+    {"slug": "canborsa", "name": "Canborsa", "rows": ["canborsa"], "site": "https://canborsa.com",
+     "x": "Canborsa_DEX", "x_source": "https://docs.canborsa.com/ecosystem/support-and-official-links"},
 ]
 # Venues whose book figures (depth, spread) are read with our own account key: nobody outside can
 # check them, so the card leaves them out (Temple: TEMPLE_API_KEY; its settled volume needs none).
@@ -80,7 +82,7 @@ KEYED_BOOKS = {"temple"}
 #   quote  turnover in each book's quote token, stablecoins counted at $1 and USDCx at its price
 #          (Rocky /ticker/24hr quoteVolume, Ekiden /market/tickers turnover_24h)
 VOLUME_BASIS = {"temple": "usd", "tradecraft": "usd", "cantex": "cc", "poolparty": "cc_leg",
-                "rocky": "quote", "rocky_perp": "quote", "ekiden": "quote"}
+                "rocky": "quote", "rocky_perp": "quote", "ekiden": "quote", "canborsa": "quote"}
 
 # What the page states about how each venue is read, next to the numbers it qualifies.
 CAVEATS = {
@@ -95,6 +97,13 @@ CAVEATS = {
     "poolparty": ["Fee (0.30%) from CCTools; priced from reserves as a constant-product pool.",
                   "Pool Party publishes no issuer, so its tokens match by instrument id."],
     "ekiden": ["MainNet tickers, mark, index and funding from the public API."],
+    "canborsa": ["Six of its USDCx perp markets, the ones with an outside spot price: CC, BTC, ETH, HYPE, "
+                 "gold and silver. Price, bid and ask are what it quotes an order; funding is its current "
+                 "hourly rate.",
+                 "Its 30-day volume is its own figure over every perp market (about 87 assets against four "
+                 "dollar tokens), each counted at $1. It publishes no 24h volume or open interest.",
+                 "Not shown as book depth: one order is capped at $20K to $50K of position size (its docs, "
+                 "\"Order size limits\"), far under the depth its orders fill against."],
     "cantex": ["Priced from live reserves with Cantex's own pool formula."],
     "tradecraft": ["Priced from live reserves with Tradecraft's own pool formula."],
 }
@@ -175,7 +184,7 @@ RANKED = {"spot_volume", "kind_volume", "perp_volume", "tvl", "tokens", "pool_co
 MIN_COUNT_TRADES = 4
 # Trading on Canton but publishing no market data we can read yet: named once, at the foot of the
 # venues index, with a way to get in touch. The one place this list lives.
-COMING = ["Trade.Fast", "Swap.Monster", "Kairo", "Canborsa", "Silvana"]
+COMING = ["Trade.Fast", "Swap.Monster", "Kairo", "Silvana"]
 # The only public credit to DefiLlama, always small print: under the method notes of a page that draws its daily charts, and under the /venues/ table.
 HISTORY_CREDIT = "Daily volume history from DefiLlama's Canton DEX data."
 STABLES = model.STABLES
@@ -390,8 +399,9 @@ def facts(data: dict) -> dict[str, dict]:
         kind_vol.setdefault(r["kind"], {})[i] = r["volume_24h_usd"]
     perp_vol: dict[str, float] = {}
     perp_mkts: dict[str, list] = {}
-    for p in perps:
-        perp_vol[p["venue"]] = perp_vol.get(p["venue"], 0) + (p["turnover_24h_usd"] or 0)
+    for p in perps:  # a venue that publishes no 24h figure (Canborsa) has none, not $0
+        if p["turnover_24h_usd"] is not None:
+            perp_vol[p["venue"]] = perp_vol.get(p["venue"], 0) + p["turnover_24h_usd"]
         perp_mkts.setdefault(p["venue"], []).append(p)
     tvl: dict[str, float] = {}
     pool_rows: dict[str, list] = {}
@@ -529,6 +539,8 @@ def facts(data: dict) -> dict[str, dict]:
             if perp_id:
                 f["perp_id"] = perp_id
                 f["perp_volume"] = perp_vol.get(perp_id)
+                # a venue's own 30-day figure where it publishes no 24h one (Canborsa)
+                f["perp_volume_30d"] = rows[perp_id].get("volume_30d_usd")
                 f["perp_rank"], f["perp_n"] = _rank(perp_vol, perp_id)
                 f["perp_markets"] = perp_mkts.get(perp_id, [])
                 counts = {k: len(x) for k, x in perp_mkts.items()}
@@ -928,6 +940,11 @@ def headline(f: dict) -> dict:
         return {"rule": "read", "title": f"{f['name']} on Canton",
                 "sub": f"{short_money(f['perp_volume'])} of perpetuals traded in the last 24 hours",
                 "value": None, "big": short_money(f["perp_volume"]), "cap": "Perpetuals traded in the last 24 hours"}
+    if f.get("perp_volume_30d"):
+        return {"rule": "read", "title": f"{f['name']} on Canton",
+                "sub": f"{short_money(f['perp_volume_30d'])} of perpetuals traded in the last 30 days",
+                "value": None, "big": short_money(f["perp_volume_30d"]),
+                "cap": "Perpetuals traded in the last 30 days, its own figure"}
     return {"rule": "read", "title": f"{f['name']} on Canton", "sub": f["kind"], "value": None}
 
 
@@ -1040,6 +1057,10 @@ def perp_tile(f: dict) -> dict:
     """Perp markets by name, the ones trading first; trading means $1K or more in 24h, the same line
     the "most perp markets" headline draws."""
     ms = f["perp_markets"]
+    if all(m["turnover_24h_usd"] is None for m in ms):  # no 24h figure published: trading is unknown
+        names = [m["base"] for m in ms]
+        return {"k": "Perp markets", "v": names_text(names), "names": names, "m": "perp_markets_read",
+                "n": f"{len(ms)} we read"}
     live = [m["base"] for m in ms if (m["turnover_24h_usd"] or 0) >= MIN_PERP_TURNOVER_USD]
     if not live:
         names = [m["base"] for m in ms]
@@ -1068,6 +1089,9 @@ def stats(f: dict) -> list[dict]:
     if f.get("perp_volume"):
         out.append({"k": "Perps volume, 24h", "v": short_money(f["perp_volume"]), "m": "perp_volume",
                     "n": ordinal_rank(f["perp_rank"], f["perp_n"])})
+    elif f.get("perp_volume_30d"):
+        out.append({"k": "Perps volume, 30 days", "v": short_money(f["perp_volume_30d"]), "m": "perp_volume_30d",
+                    "n": "its own figure"})
     if f.get("pools"):
         out.append({"k": "In pools", "v": short_money(f["tvl"]), "n": pools_text(f), "m": "tvl"})
     elif f.get("keyed"):
@@ -1130,6 +1154,8 @@ METHOD = {
     "pools": "",
     "read": "Read from the venue's API.",
 }
+# venues read through their web app's public routes, not a documented API (Canborsa since 2026-10-28)
+WEB_APP_READ = {"canborsa"}
 # the "on Canton" version of a ranking line
 METHOD_CANTON = "Ranked {what} across every Canton DEX with public market data."
 
@@ -1143,6 +1169,9 @@ def metric_note(m: str, f: dict) -> str:
     if m == "perp_volume":
         quotes = ", ".join(sorted({x["quote"] for x in f.get("perp_markets") or []})) or "the quote token"
         return f"Perps volume: 24h turnover in {quotes}, counted at $1."
+    if m == "perp_volume_30d":
+        return (f"Perps volume, 30 days: {f['name']}'s own figure over every perp market, each quote token "
+                "counted at $1.")
     return {
         "tvl": "Pool liquidity: twice each CC pool's CC reserve, at our CC price; a pool of two other "
                "tokens at our prices of both (twice the one side we price).",
@@ -1152,6 +1181,7 @@ def metric_note(m: str, f: dict) -> str:
         "markets": f"Markets: every market {f['name']} reports as traded in the last 24 hours.",
         "oi": "Open interest: open contracts at mark price.",
         "perp_markets": "Perp markets trading: $1K or more in 24h.",
+        "perp_markets_read": "Perp markets: the ones we read, each with an outside spot price for its basis.",
         "fee": "Pool fee: per swap, before network fees.",
     }.get(m, "")
 
@@ -1171,6 +1201,8 @@ def card_method(f: dict, head: dict) -> list[str]:
         lead = METHOD_CANTON.format(what={"spot_volume": "by spot volume"}.get(rule, "by volume"))
     else:
         lead = METHOD.get(rule, "").format(tracked=tracked(f))
+        if rule == "read" and f.get("id") in WEB_APP_READ:
+            lead = "Read from the public routes of the venue's web app; it has no documented API yet."
     out = [lead] if lead else []
     for p in stats(f):
         note = metric_note(p.get("m", ""), f)
@@ -1901,7 +1933,12 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
         st.append((f"Tokens with {money(MIN_LIQUIDITY_USD)}+ liquidity", str(tf["n"])))
     if f.get("deepest") and not f.get("pools") and not f.get("keyed"):
         st.append((f"Book depth within 1%, {depth_pair(f['deepest'])}", money(f["deepest"]["usd"])))
-    if f.get("perp_markets"):
+    if f.get("perp_volume") is None and f.get("perp_volume_30d"):
+        st.append(("Perps volume, 30 days", money(f["perp_volume_30d"])))
+    if f.get("perp_markets") and all(m["turnover_24h_usd"] is None for m in f["perp_markets"]):
+        # no 24h figure published: whether a market trades is unknown, not "0 of 6"
+        st.append(("Perp markets we read", str(len(f["perp_markets"]))))
+    elif f.get("perp_markets"):
         live = sum(1 for m in f["perp_markets"] if (m["turnover_24h_usd"] or 0) >= MIN_PERP_TURNOVER_USD)
         st.append(("Perp markets trading", f"{live} of {len(f['perp_markets'])}"))
     parts.append('  <div class="stats">' + "".join(

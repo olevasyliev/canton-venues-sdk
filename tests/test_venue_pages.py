@@ -1045,7 +1045,8 @@ def test_venues_index_top_line_coming_block_and_one_lead_per_row(tmp_path):
     assert "Every Canton DEX with public market data, live." in text
     coming = idx.split("<h2>Coming to Canton Venues</h2>", 1)[1].split("</section>", 1)[0]
     assert "Trading on Canton, no public market data yet: " + ", ".join(vp.COMING) + "." in coming
-    assert vp.COMING == ["Trade.Fast", "Swap.Monster", "Kairo", "Canborsa", "Silvana"]
+    # Canborsa left this list on 2026-10-28, read through its web app's public routes
+    assert vp.COMING == ["Trade.Fast", "Swap.Monster", "Kairo", "Silvana"]
     assert 'href="/#contact">Get in touch</a>' in coming
     # each row carries its lead twice in the markup, but only one is ever shown: the column on a wide
     # screen (hide-sm hides it under 720px), the tagline under the name on a phone (hidden above)

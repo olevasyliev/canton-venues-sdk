@@ -383,3 +383,26 @@ locked, updated_at}]}`; `GET /api/trading/delegation` → `{"delegations": [], "
 `GET /api/trading/orders/active` → `{"count", "has_more", "limit", "orders": null | [...], "total_count"}`.
 Empty lists arrive as `null`. Order, cancel and cancel-all responses are **unverified** until the first
 live order.
+
+---
+
+# Canborsa (`venues/canborsa.py`) — perpetuals, read-only, no key
+
+An account-based exchange on Canton (one balance, deposits from six networks) with perpetuals on about 87
+assets against USDT, USDC, USDCx and USDG, and swaps. No documented API (its roadmap lists one for Q4 2026);
+these are the routes its web app reads without a session, from `app.canborsa.com/assets/index-*.js` (fetch
+helper base `"/api/v1"`, socket `wss://app.canborsa.com` path `/socket.io`). Checked live on MainNet,
+2026-10-28, from Spain and from the collector's server in Germany.
+
+| Method | Source | Notes |
+|---|---|---|
+| `markets` | `GET https://app.canborsa.com/api/v1/perpetuals/markets` | 696 rows, every market twice (`isShort` false and true) with the same `volume30d`; `openingFee`/`closingFee` 0.00055, `maxLeverage`, `minAmountUSD`/`maxAmountUSD` (order size limits on position size, its docs), `settlementPeriodInHours` 1 |
+| `funding_rates` | `GET /api/v1/perpetuals/funding-rates` | `{"cc/usdcx": {"rate", "annualRate", "settlementPeriodInHours", "updatedAt"}}`; `rate` per period |
+| `stream` | socket.io `rates3` | subscribe `42["sub", {"name": "rates3", "symbols": [...], "product": "perpetual"}]`; pushes `["perpetual", [[symbol, price, bid, ask, iso time, 24h change], ...]]` about once a second, numbers as JSON floats |
+| `stream` | socket.io `execution-depth` | subscribe `42["sub", {"name": "execution-depth", "symbols": [...]}]`; pushes `{symbol: {status, bids, asks, generatedAt, expiresAt, ...}}`, 20 levels a side on CC, one to four on BTC, ETH, gold; `"unavailable"` for a swap-only token |
+
+The socket is engine.io v4 over a websocket: `0{...}` open, `40` to join the namespace, `2`/`3` ping and
+pong, `42[event, ...]` events. It answered only with a browser `Origin` header. The depth belongs to the
+perp, not to a spot book: CC/USDCx and CC/USDC returned the same levels. The swap (`rates` event, one price
+per pair) has no depth, so it is not compared with the spot venues. No 24h volume, open interest or trade
+list is public.
