@@ -1121,8 +1121,9 @@ def test_sitemap_lists_the_dashboard_and_every_live_venue_page(tmp_path):
     xml = (tmp_path / "sitemap.xml").read_text()
     locs = re.findall(r"<loc>(.+?)</loc>", xml)
     pages = {p.parent.name for p in (tmp_path / "venues").glob("*/index.html")}
-    assert locs[:2] == [f"{vp.SITE}/", f"{vp.SITE}/venues/"] and locs[-1] == f"{vp.SITE}/weekly/"
-    assert {u.rsplit("/", 2)[1] for u in locs[2:-1]} == pages
+    assert locs[:2] == [f"{vp.SITE}/", f"{vp.SITE}/venues/"]
+    assert locs[-2:] == [f"{vp.SITE}/weekly/", f"{vp.SITE}/build/"]
+    assert {u.rsplit("/", 2)[1] for u in locs[2:-2]} == pages
 
 
 def test_agent_guide_and_api_index_list_the_same_endpoints():

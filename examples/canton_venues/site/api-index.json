@@ -129,6 +129,10 @@
       "check_trade"
     ]
   },
+  "build": {
+    "url": "https://cantonvenues.com/build/",
+    "about": "using the data in an app or an agent? One call to start with per kind of app, and a form to register it: notice at least 14 days before any breaking change, direct help, and a listing if you want one. Optional; the API stays the same without it"
+  },
   "docs": "https://cantonvenues.com/llms.txt",
   "source": "https://github.com/olevasyliev/canton-venues-sdk"
 }

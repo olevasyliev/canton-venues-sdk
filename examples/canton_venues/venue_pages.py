@@ -2101,9 +2101,11 @@ def _write(path: Path, text: str) -> None:
 
 
 def sitemap(all_facts: dict, t: int) -> str:
-    """The dashboard, the venues index, a page per live venue and the weekly card, for crawlers."""
+    """The dashboard, the venues index, a page per live venue, the weekly card and the build page, for
+    crawlers."""
     day = datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%d")
-    urls = [f"{SITE}/", f"{SITE}/venues/"] + [f"{SITE}/venues/{s}/" for s in all_facts] + [f"{SITE}/weekly/"]
+    urls = ([f"{SITE}/", f"{SITE}/venues/"] + [f"{SITE}/venues/{s}/" for s in all_facts]
+            + [f"{SITE}/weekly/", f"{SITE}/build/"])
     rows = "".join(f"  <url><loc>{u}</loc><lastmod>{day}</lastmod></url>\n" for u in urls)
     return f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{rows}</urlset>\n'
 

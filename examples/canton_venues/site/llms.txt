@@ -55,9 +55,14 @@ Tools:
 
 Example questions: "where is CBTC cheapest for $20K right now?", "how much CBTC can I sell on Canton within 2%?", "I sold 10,000 CC for 975 USDCx on Cantex at 09:00 UTC today: was that a good fill?"
 
+## Building on it
+
+Using the data in an app or an agent? https://cantonvenues.com/build/ has one call to start with for a wallet, a router or DCA product, a lending or risk tool and an analytics product, and a form to register the app (optional; the API is the same without it). Registered apps get notice at least 14 days before any breaking change (removing or renaming a field or a file, or changing what one means; a new field is never breaking), direct help, and a listing on that page if they want one.
+
 ## Pages
 
 - [Dashboard](https://cantonvenues.com/): tokens, best execution, premiums, spreads, pools, perps, API
+- [Build](https://cantonvenues.com/build/): one call to start with per kind of app, and app registration
 - [Venues](https://cantonvenues.com/venues/): one page per venue with its strongest facts and a share card
 - [Weekly](https://cantonvenues.com/weekly/): the last seven days of Canton DEX volume by venue
 - [Telegram channel](https://t.me/cantonvenues): a weekday post and loud alerts

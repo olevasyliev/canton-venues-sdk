@@ -25,6 +25,8 @@ ssh "$SERVER" "
   install -m 644 current/examples/canton_venues/site/index.html current/examples/canton_venues/site/*.png \
     current/examples/canton_venues/site/llms.txt current/examples/canton_venues/site/robots.txt /var/www/canton-venues/
   install -m 644 current/examples/canton_venues/site/api-index.json /var/www/canton-venues/api/v1/index.json
+  # the build page changes only with the code: written once per deploy (build_page.py)
+  (cd current/examples/canton_venues && /opt/canton-venues/.venv/bin/python build_page.py --out /var/www/canton-venues)
   install -m 644 current/examples/canton_venues/deploy/canton-venues.service current/examples/canton_venues/deploy/canton-venues-mcp.service current/examples/canton_venues/deploy/canton-venues-contact.service \
     current/examples/canton_venues/deploy/canton-venues-study.service current/examples/canton_venues/deploy/canton-venues-study.timer \
     current/examples/canton_venues/deploy/canton-venues-crosscheck.service current/examples/canton_venues/deploy/canton-venues-crosscheck.timer \
