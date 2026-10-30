@@ -234,6 +234,18 @@ def _book_of(p):
     return m.pool_hop(p) if isinstance(p, m.CCBook) else None
 
 
+def book_only(books: dict, ob: dict) -> list[str]:
+    """Tokens priced by order books alone: no CC pool on any venue (Temple's BETH from 19 Oct 2026)."""
+    return sorted(k for k, vs in ob.items() if vs and k not in books and k != CC)
+
+
+def _label(sym: str, books: dict, ob: dict) -> str:
+    """A token's name as its venue writes it: its first pool's, else the base of its first book."""
+    if books.get(sym):
+        return next(iter(books[sym].values())).token
+    return next(iter(ob[sym].values()))["symbol"].replace("-", "/").partition("/")[0]  # Rocky writes CBTC-USDCX
+
+
 def _tc_swap(st):
     """A Tradecraft pool of two tokens, priced the venue's way (half its fee on each leg)."""
     from cantonvenues.venues.tradecraft import swap_output
@@ -301,6 +313,8 @@ class Collector:
         self.started = int(time.time())
         self.usdcx_last = Decimal(1)  # CoinGecko's last good USDCx price
         self.temple_error: str | None = None  # why Temple's keyed books were not read, when they were not
+        self.temple_read: set[str] = set()  # Temple's markets whose book was read this tick
+        self.book_only: list[str] = []  # tokens priced by order books alone this tick
         # each venue's own CC price this tick, from its CC/USDCx market (``_venue_usd``)
         self.cc_at: dict[str, Decimal] = {}
         # pools read this tick that pair two tokens other than CC, with their reserves (lp.json
@@ -641,9 +655,13 @@ class Collector:
 
         Needs TEMPLE_API_KEY; without it Temple stays volume-only (settled volume needs no key).
         Volume is not taken from here: the keyless settled-volume route already counts it.
+
+        A token with no CC pool anywhere is read too: BETH/USDCx, listed on 19 Oct 2026, traded $18.1M in
+        23-29 Oct (12% of Temple's volume) and was in no file while only pooled tokens were read.
         """
         temple = await self._venue("temple")
         self.temple_priced = self.temple_cc_book = False
+        self.temple_read = set()
         if temple is None or not temple.has_key:
             return {}, {}, None, None
         try:
@@ -651,7 +669,7 @@ class Collector:
             for t in await temple.tickers():
                 base, _, quote = t.symbol.partition("/")
                 k = m.key(base)
-                if quote != "USDCx" or (k not in books and k != CC):
+                if quote != "USDCx":
                     continue
                 book = None
                 for attempt in range(2):  # one book that fails is asked again, then left out alone (one
@@ -674,6 +692,7 @@ class Collector:
                 bv = m.BookVenue("temple", t.symbol, tuple((lv.price, lv.size) for lv in book.bids),
                                  tuple((lv.price, lv.size) for lv in book.asks), usdcx_usd,
                                  m.BOOK_TAKER_FEE["temple"])
+                self.temple_read.add(t.symbol)
                 if k == CC:
                     cc, cc_book = info, bv
                     continue
@@ -908,6 +927,10 @@ class Collector:
             for info in ob.get(sym, {}).values():
                 quotes.append((Decimal(str(info["price_usd"])), Decimal(str(info["depth_usd"]))))
             out[sym] = m.weighted_usd(quotes) or m.token_usd(list(pools.values()), cc_usd)
+        for sym in book_only(books, ob):  # its books alone, the mid when none holds depth within 1%
+            infos = list(ob[sym].values())
+            out[sym] = (m.weighted_usd([(Decimal(str(i["price_usd"])), Decimal(str(i["depth_usd"]))) for i in infos])
+                        or Decimal(str(infos[0]["price_usd"])))
         return out
 
     def _fresh(self, source: str, now: int, limit: int = VOLUME_MAX_AGE_S) -> bool:
@@ -1304,6 +1327,7 @@ class Collector:
         self._record(now, cc_usd, prices)
         own = self._own_series()
 
+        self.book_only = book_only(books, ob)
         tokens = self._tokens(books, cc_usd, tickers, series, own, now_ms, ob, prices)
         premium = self._premium(books, cc_usd, gecko, ob, prices, now, quiet=m.idle(tokens))
         dollar = self._dollar_routes(books, hops, ob_books, prices, usdcx_usd)
@@ -1567,7 +1591,8 @@ class Collector:
                 k = m.key(quote) if m.key(base) == CC else m.key(base)
                 temple_vol[k] = temple_vol.get(k, 0.0) + v
         out = []
-        for sym, pools in books.items():
+        for sym in [*books, *book_only(books, ob)]:
+            pools = books.get(sym, {})
             price = prices[sym]
             venues = {}
             for v, p in pools.items():
@@ -1604,7 +1629,7 @@ class Collector:
             # CC's (USDM1 -6.6%, six $20 pools -7.1% on 2026-10-15, CC -12.5%), so none is published
             quiet = traded is False or (traded and vol < m.MIN_TRADED_USD)
             out.append({
-                "symbol": pools[next(iter(pools))].token,
+                "symbol": _label(sym, books, ob),
                 "key": sym,
                 "image": self.slow.get("images", {}).get(sym),
                 "price_usd": r(price, 8),
@@ -1742,7 +1767,8 @@ class Collector:
             dollar["USDC.B"] = usdcx_usd
         out = {}
         for sym in sorted(ob_books):
-            label = next(iter(books[sym].values())).token
+            label = (next(iter(books[sym].values())).token if sym in books  # a book-only token: its book's base
+                     else next(iter(ob_books[sym].values()))[0].symbol.replace("-", "/").partition("/")[0])
             routes = {v: [m.Route(v, label, d, sym, tuple(paths)) for d in dollar
                           if (paths := m.venue_paths(hs, d, sym, MIN_MARKET_USD))] for v, hs in hops.items()}
             out[sym] = m.DollarRoutes(routes, dollar)
@@ -1788,7 +1814,7 @@ class Collector:
             rows = m.usd_ladder(routes, prices[sym], cc_usd)
             out.append({
                 "key": sym + ":USD", "kind": "usd", "token": sym,
-                "symbol": next(iter(books[sym].values())).token,
+                "symbol": next(iter(routes.routes.values()))[0].token,  # a book-only token has no pool to name it
                 "venues": routes.venues,
                 "books": {v: {"market": h.market, "fee": float(h.fee)} for v, h in routes.books.items()},
                 **({"not_trading": nt} if (nt := {v: st for (v, k), st in self.still.items() if k == sym}) else {}),
@@ -1886,6 +1912,15 @@ class Collector:
                 out[v] = last
         return out
 
+    def _temple_unread(self) -> dict[str, float]:
+        """Temple's markets that traded in its last settled-volume read and had no book read this tick,
+        each with its 24h volume in its quote token. Only while Temple's keyed books are read at all:
+        with none read, the watchdog's own Temple trouble says so."""
+        if not self.temple_priced and not self.temple_cc_book:
+            return {}
+        vol = self.slow.get("temple_volume") or {}
+        return {s: r(v, 2) for s, v in sorted(vol.items()) if v and v > 0 and s not in self.temple_read}
+
     def _summary(self, cc_usd, cx_volume, gecko, series, now_ms, books, now, took) -> dict:
         # CC's change from our own samples of the price shown beside it (depth-weighted, Temple's book
         # in it) once a full day of them follows that step; Cantex's CC-USDCX candles before (its pools
@@ -1911,8 +1946,11 @@ class Collector:
                            "fees_cc": r(_num(cx_volume.get("fees_cc")), 2)},
             # DefiLlama's figures, while their read is under six hours old
             "ecosystem": llama if llama and now - llama.get("t", 0) <= LLAMA_MAX_AGE_S else None,
-            "tokens": len(books),
+            "tokens": len(books) + len(self.book_only),  # a token on an order book alone counts too
             "on_two_venues": sum(len(v) > 1 for v in books.values()),
+            # Temple markets that traded in 24h but whose book we did not read (another quote than USDCx,
+            # or a book that failed): what they traded, in their quote token (watchdog.py tells the owner)
+            **({"temple_unread": u} if (u := self._temple_unread()) else {}),
             "venues_priced": [v for v in CORE if v not in self.down] + sorted(self.live),
             # a core venue left out since this time (watchdog.py tells the owner after 30 min)
             "down_since": dict(self.down),

@@ -19,7 +19,8 @@ candles and Tradecraft or Temple volume 1 h, DefiLlama 6 h), and a tick that fai
 row (``status: error`` with a fresh ``t``: summary.json is the tick's last write). Since 2026-10-15:
 Temple's CC/USDCx book unread for 30 min, three failed ticks in an hour, a fresh snapshot without a
 CC price or tokens; a trouble that clears while others stay sends nothing, and "whole again" waits for
-a second clear run.
+a second clear run. Since 2026-10-30: a Temple market that traded in 24h with no book of it read
+(``temple_unread``), so a new listing is told the day it trades, not found by hand 11 days later.
 
 The bot and chat are the pair contact.py and crosscheck.py use (TELEGRAM_BOT_TOKEN, CONTACT_CHAT_ID
 from the server's .env). What was last sent lives in ``--state`` (off the web root), so a restart
@@ -112,6 +113,12 @@ def _troubles(summary: dict, now_s: float, error_seen: bool) -> dict[str, tuple[
         out["temple_book"] = (book_t or now_s, f"Temple's order books are not read ({html.escape(str(why)[:200])}): "
                                                "Temple shows volume only"
                                                + (f", since {_when(book_t)}." if book_t else "."))
+    # a Temple market that trades while we read no book of it (BETH/USDCx, $30M over 11 days from 19 Oct
+    # 2026, seen by hand): it is in Temple's volume only, in no price, depth, comparison or exit
+    for sym, v in sorted((summary.get("temple_unread") or {}).items()):
+        quote = html.escape(sym.partition("/")[2] or "its quote token")
+        out[f"unread:{sym}"] = (now_s, f"Temple's {html.escape(sym)} traded {v:,.0f} {quote} in 24h, a market "
+                                       "we do not read: in no price, depth or exit.")
     for src, limit in SOURCE_MAX_AGE_S.items():
         if sources.get(src) is not None and now_s - sources[src] > limit:
             out[f"source:{src}"] = (sources[src], f"{SOURCE_NAME[src]} last read {_when(sources[src])}, "
