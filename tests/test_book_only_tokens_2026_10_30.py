@@ -114,3 +114,30 @@ def test_no_unread_market_is_told_while_temples_books_are_not_read_at_all(tmp_pa
     temple.has_key = False
     s = _tick(tmp_path, monkeypatch, optional={"temple": temple})["summary"]
     assert s["temple_priced"] is False and "temple_unread" not in s
+
+
+# --- a restart does not make a venue that was out "back" -------------------------------------------------
+
+def test_a_venue_out_before_a_restart_stays_out_from_its_own_time(tmp_path):
+    # Pool Party was unread from 28 Oct 11:22 UTC; each deploy on 30 Oct restarted the count, its entry left
+    # summary.json for 10 minutes and the watchdog told the owner "whole again" while it was still out
+    import asyncio
+    import json
+
+    import collect
+    www = tmp_path / "www"
+    (www / "api" / "v1").mkdir(parents=True)
+    since = int(time.time()) - 49 * 3600
+    (www / "api" / "v1" / "summary.json").write_text(json.dumps({"optional_down": {"poolparty": since}}))
+    c = collect.Collector(www)
+    asyncio.run(c.http.aclose())
+    now = c.started + 60  # the first tick after the restart, not 10 minutes later
+    assert c._optional_down(now)["poolparty"] == since
+    c.fresh["poolparty"] = now  # read again after the restart: back, as before
+    assert "poolparty" not in c._optional_down(now + 60)
+    # the watchdog sees the same venue out since the same time: no "whole again", nothing new to tell
+    state = {"alerted": now - 600, "kind": "venues", "venues": ["venue:poolparty"], "since": since}
+    summary = {"t": now, "status": "ok", "cc_usd": 0.1, "tokens": 1,
+               "optional_down": c._optional_down(now)}
+    msg, _ = wd.check(summary, state, datetime.fromtimestamp(now, UTC))
+    assert msg is None

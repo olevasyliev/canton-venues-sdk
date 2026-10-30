@@ -303,9 +303,15 @@ class Collector:
         # each outside source's last good read (unix time), for summary.json and the watchdog; carried
         # over from the last summary, so a source broken by a deploy ages and is told (it was empty
         # after every restart, and a source absent from it was never a trouble)
+        last_summary = load_json(out / "api" / "v1" / "summary.json", {})
         self.sources: dict[str, int] = {
-            k: v for k, v in (load_json(out / "api" / "v1" / "summary.json", {}).get("sources") or {}).items()
+            k: v for k, v in (last_summary.get("sources") or {}).items()
             if isinstance(v, int) and k != "llama"}
+        # each optional venue left out at the last summary, since when: carried over the same way, so a
+        # restart does not make it "back" (Pool Party, unread since 28 Oct 11:22 UTC, counted from each
+        # deploy on 30 Oct and the watchdog told "whole again" while it was still out)
+        self.down_before: dict[str, int] = {
+            k: v for k, v in (last_summary.get("optional_down") or {}).items() if isinstance(v, int)}
         self.fail_times: list[int] = []  # ticks that failed, for summary.json failed_ticks_1h
         self.last_error: dict | None = None  # the last failed tick's error and time
         self.temple_cc_book = False  # Temple's CC/USDCx book read this tick (it weighs most in the CC price)
@@ -1905,10 +1911,11 @@ class Collector:
 
     def _optional_down(self, now: int) -> dict[str, int]:
         """Each venue read every tick, other than the core two, that has not been read for 10 min: the
-        time of its last good read (the start, if none since)."""
+        time of its last good read (if none since the start: since when the last summary had it out, else
+        the start)."""
         out = {}
         for v in self.optional:
-            last = self.fresh.get(v) or self.started
+            last = self.fresh.get(v) or self.down_before.get(v) or self.started
             if v != "temple" and now - last > 600:
                 out[v] = last
         return out
