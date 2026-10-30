@@ -30,6 +30,10 @@ MIN_ROUTE_USD = Decimal("0.50")
 REFERENCES = {
     "CC": ("canton-network", "global CC markets"),
     "CETH": ("ethereum", "ETH"),
+    # Temple's BETH/USDCx (from 19 Oct 2026; issuer not published) trades at ETH's price: $2,233 against
+    # ETH's $2,234 on 30 Oct, where Binance's BETH on BSC, which CoinMarketCap files it under, stood at
+    # $2,486. So it is measured against ETH, as cETH is, and says nothing of who issues it
+    "BETH": ("ethereum", "ETH"),
     "CBTC": ("bitcoin", "BTC"),
     "EXAU": ("spot:XAU", "gold spot"),
     "EXAG": ("spot:XAG", "silver spot"),

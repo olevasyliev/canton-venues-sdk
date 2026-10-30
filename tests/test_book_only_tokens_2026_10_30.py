@@ -59,11 +59,27 @@ def test_a_token_on_temples_book_alone_is_priced_listed_and_has_an_exit(tmp_path
     assert "BETH/USDCx" in out["pools"]["books"]["BETH"]
     row = next(x for x in out["exit"]["tokens"] if x["key"] == "BETH")
     assert row["capacity_usd"]["2pct"]["all_venues"] > 0
-    # one venue: nothing to compare, so no best-execution pair and no premium row (no outside reference)
+    # one venue: nothing to compare, so no best-execution pair
     assert not any(p.get("token") == "BETH" or p["key"] == "BETH" for p in out["execution"]["pairs"])
-    assert not any(a["key"] == "BETH" for a in out["premium"]["assets"])
+    # its reference is ETH; with no ETH price in this read it says so instead of a figure
+    row = next(a for a in out["premium"]["assets"] if a["key"] == "BETH")
+    assert row["reference"] == "ETH" and row["status"] == "no reference price" and "premium" not in row
     # nothing unread: every market that traded had its book read
     assert "temple_unread" not in out["summary"]
+
+
+def test_a_book_only_token_is_measured_against_its_outside_price(tmp_path, monkeypatch):
+    # BETH trades at ETH's price (30 Oct: $2,233 against $2,234); it is measured against ETH, as cETH is
+    eth = {"ethereum": {"usd": 2240.0, "last_updated_at": int(time.time())}}
+    out = _tick(tmp_path, monkeypatch, optional={"temple": _temple(VOLUME)}, gecko=eth)
+    row = next(a for a in out["premium"]["assets"] if a["key"] == "BETH")
+    assert row["symbol"] == "BETH" and row["reference"] == "ETH" and row["reference_id"] == "ethereum"
+    assert row["status"] == "ok" and row["reference_usd"] == 2240.0
+    assert row["premium"] == pytest.approx(float(BETH_MID) / 2240 - 1, abs=2e-4)  # about -0.45%
+    assert set(row["premium_by_venue"]) == {"temple"}
+    assert row["premium_by_venue"]["temple"] == pytest.approx(row["premium"], abs=1e-9)
+    # the pooled tokens keep their own names in the same list
+    assert next(a for a in out["premium"]["assets"] if a["key"] == "CBTC")["symbol"] == "CBTC"
 
 
 def test_pooled_tokens_are_as_before_with_a_book_only_token_beside_them(tmp_path, monkeypatch):

@@ -1662,7 +1662,8 @@ class Collector:
             col.extend([None] * (n - 1 - len(col)))
             col.append(r(val, 6))
 
-        candidates = [(CC, None)] + [(s, p) for s, p in books.items()]
+        # a token on an order book alone (Temple's BETH) has no pools: its books give its price and per venue
+        candidates = [(CC, None)] + [(s, p) for s, p in books.items()] + [(s, {}) for s in book_only(books, ob)]
         for sym, pools in candidates:
             missing = "no reference price"
             if sym in m.REFERENCES:
@@ -1683,7 +1684,7 @@ class Collector:
             else:
                 continue
             if sym != CC and sym in quiet:
-                rows.append({"key": sym, "symbol": next(iter(pools.values())).token, "kind": kind,
+                rows.append({"key": sym, "symbol": _label(sym, books, ob), "kind": kind,
                              "reference": label, "status": "traded under $1K in 24h"})
                 continue
             canton = cc_usd if sym == CC else prices[sym]
@@ -1705,7 +1706,7 @@ class Collector:
             keep(sym, prem)
             rows.append({
                 "key": sym,
-                "symbol": next(iter(pools.values())).token if pools else CC,
+                "symbol": CC if sym == CC else _label(sym, books, ob),
                 "kind": kind,
                 "reference": label,
                 "reference_id": gid,
