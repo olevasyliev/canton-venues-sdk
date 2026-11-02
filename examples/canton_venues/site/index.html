@@ -523,6 +523,9 @@ body:not(.tv) #tokenview { display: none; }
 <script>
 const API = "api/v1/";
 const V = { cantex: "Cantex", tradecraft: "Tradecraft", rocky: "Rocky", rocky_perp: "Rocky perps", ekiden: "Ekiden", oneswap: "OneSwap", poolparty: "Pool Party", temple: "Temple", canborsa: "Canborsa" };
+// each venue's own site, the same as on its venue page (venue_pages.py VENUES "site"): the "Trade here" link
+// in best execution goes there, the same plain link for every venue, nothing routed, no fee, no referral code
+const VURL = { temple: "https://templedigitalgroup.com", cantex: "https://www.cantex.io", rocky: "https://rocky.exchange", tradecraft: "https://tradecraft.fi", ekiden: "https://ekiden.fi", oneswap: "https://www.oneswap.cc", poolparty: "https://poolparty.fun", canborsa: "https://canborsa.com" };
 const VC = { cantex: "var(--cantex)", tradecraft: "var(--trade)", rocky: "var(--rocky)", rocky_perp: "var(--rocky)", ekiden: "var(--ekiden)", oneswap: "var(--oneswap)", poolparty: "var(--poolparty)", temple: "var(--temple)", canborsa: "var(--canborsa)" };
 const S = { size: "liq", color: "change_24h", pair: "USDCX", side: "sell", sort: "liquidity_usd", dir: "desc", lpSort: "tvl_usd", lpAll: false };
 try { Object.assign(S, JSON.parse(localStorage.getItem("venues-view2") || "{}")); } catch (e) {}
@@ -952,14 +955,15 @@ function renderExecution() {
   const symOf = (k) => k === "CC" ? "CC" : ((D.tokens?.tokens || []).find((t) => t.key === k)?.symbol || k);
   const viaAll = (v) => { const xs = rows.map((r) => (r.via || {})[v]); return xs.every((x) => x && x === xs[0]) ? xs[0] : null; };
   const twoNote = (r, v) => (r.via || {})[v] && !viaAll(v) ? ` <span class="muted" title="two swaps, through ${esc(symOf(r.via[v]))}">via ${esc(symOf(r.via[v]))}</span>` : "";
-  $("fills").innerHTML = `<thead><tr><th class="l">Trade size</th>${vs.map((v) => `<th>${V[v]}${viaAll(v) ? `<span class="muted"> via ${esc(symOf(viaAll(v)))}</span>` : ""}</th>`).join("")}<th class="hide-sm">Beats next best by</th></tr></thead><tbody>` +
+  $("fills").innerHTML = `<thead><tr><th class="l">Trade size</th>${vs.map((v) => `<th>${V[v]}${viaAll(v) ? `<span class="muted"> via ${esc(symOf(viaAll(v)))}</span>` : ""}</th>`).join("")}<th class="hide-sm">Beats next best by</th><th>Trade here</th></tr></thead><tbody>` +
     rows.map((r) => `<tr><td class="l"><b>${usdSize(r.size_usd)}</b>${inU === "$" ? "" : ` <span class="muted">${amt(r.amount_in)} ${esc(inU)}</span>`}</td>
       ${vs.map((v) => `<td class="num" style="${netBest(r) === v ? `color:${VC[v]};font-weight:700` : ""}"${r.out_net && r.out[v] != null ? ` title="${esc(`Before the network fee: ${outU === "$" ? money(r.out[v]) : amt(r.out[v]) + " " + outU}. Network fee per trade: ${feeNote(v)}${(r.swaps || {})[v] === 2 ? ", paid on each of its two swaps" : ""}`)}"` : ""}>${fmt(netOut(r)[v], outU)}${twoNote(r, v)}</td>`).join("")}
-      <td class="num hide-sm">${V[netBest(r)]} +${(netEdge(r) / 100).toFixed(2)}%</td></tr>`).join("") + "</tbody>";
+      <td class="num hide-sm">${V[netBest(r)]} +${(netEdge(r) / 100).toFixed(2)}%</td>
+      <td>${VURL[netBest(r)] ? `<a class="tradehere" href="${VURL[netBest(r)]}" target="_blank" rel="noopener">${V[netBest(r)]} ↗</a>` : ""}</td></tr>`).join("") + "</tbody>";
   const bookNote = Object.entries(pair.books || {}).map(([v, b]) => ` ${V[v]} trades it on its ${esc(b.market)} book with a ${(b.fee * 100).toFixed(3)}% taker fee${v === "rocky" ? " (assumed: Rocky publishes no fee schedule)" : v === "temple" ? " (Temple's published rate)" : ""}.`).join("");
   $("execnote").innerHTML = (usd ? `Same dollar amount on every venue, each by its best route on its own markets: one order on a book, a pool against a dollar token, or dollars to CC to ${sym} through two of its own pools. USDC.B counts as USDCx while it holds within 1% of $1.`
     : "Each venue by its best route on its own markets, one swap or two (Temple: CC to USDCx, then USDCx to the token). Pool fees and price impact included.") + bookNote + (usd ? " Cost is measured against the Canton price." : "");
-  $("execnote").innerHTML += stillNote(pair.not_trading) + checkNote();
+  $("execnote").innerHTML += stillNote(pair.not_trading) + checkNote() + " Trade here goes to the best venue's own site, the same link for every venue: we route nothing and take no fee.";
   const assumed = vs.filter((v) => (D.execution.network_fee || {})[v]?.basis === "assumed").map((v) => V[v]);
   if (D.execution.network_fee) $("execnote").innerHTML += ` Each venue's network fee per trade is taken off too${assumed.length ? `; for ${assumed.length > 1 ? assumed.slice(0, -1).join(", ") + " and " + assumed[assumed.length - 1] : assumed[0]} it is our assumption until we measure it` : ""}. Hover a figure for it before the fee.`;
 }
@@ -1144,6 +1148,7 @@ $("contactform").addEventListener("submit", async (e) => {
   function kind(a) {
     var h = a.getAttribute("href") || "";
     if (a.hasAttribute("download")) return "card-download";
+    if (a.classList.contains("tradehere")) return "trade-here";
     if (/^https:\/\/t\.me\//.test(h)) return "telegram";
     if (/^https:\/\/x\.com\/intent\//.test(h)) return "share-x";
     if (/^https:\/\/x\.com\//.test(h)) return "venue-x";
