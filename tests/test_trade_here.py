@@ -42,5 +42,8 @@ def test_trade_here_column_and_event() -> None:
     assert "<th>Trade here</th>" in PAGE
     assert 'class="tradehere"' in PAGE
     assert 'return "trade-here"' in PAGE
+    # the event says which trade (pair, side, size); not data-pair/-side/-size, which the page's
+    # own click handler reads to switch the table
+    assert "data-trade=" in PAGE and "a.dataset.trade" in PAGE
     # the same link for every venue, said on the page
     assert "we route nothing and take no fee" in PAGE
