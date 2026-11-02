@@ -1167,7 +1167,7 @@ $("contactform").addEventListener("submit", async (e) => {
     var a = ev.target.closest && ev.target.closest("a[href]");
     var k = a && kind(a);
     // trade-here also says which trade: pair key, side and size in dollars ("CC 2 sell 10000")
-    if (k) track(k, Object.assign({ place: place(a), href: a.getAttribute("href").slice(0, 200) }, a.dataset.trade ? { trade: a.dataset.trade.slice(0, 80) } : {}));
+    if (k) track(k, { place: place(a), href: a.getAttribute("href").slice(0, 200), ...(a.dataset.trade ? { trade: a.dataset.trade.slice(0, 80) } : {}) });
   }, true);
   document.addEventListener("copy", function () {
     var n = document.getSelection().anchorNode, pre = n && (n.nodeType === 1 ? n : n.parentElement).closest("pre.curl");
