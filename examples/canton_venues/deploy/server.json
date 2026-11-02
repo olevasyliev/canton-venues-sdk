@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.cantonvenues/canton-venues",
+  "title": "Canton Venues",
+  "description": "Live Canton Network DEX data: prices, best execution across venues, exit cost, premiums. No key.",
+  "repository": {
+    "url": "https://github.com/olevasyliev/canton-venues-sdk",
+    "source": "github"
+  },
+  "websiteUrl": "https://cantonvenues.com",
+  "version": "1.0.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://cantonvenues.com/mcp"
+    }
+  ]
+}

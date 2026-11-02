@@ -25,6 +25,8 @@ ssh "$SERVER" "
   install -m 644 current/examples/canton_venues/site/index.html current/examples/canton_venues/site/*.png \
     current/examples/canton_venues/site/llms.txt current/examples/canton_venues/site/robots.txt /var/www/canton-venues/
   install -m 644 current/examples/canton_venues/site/api-index.json /var/www/canton-venues/api/v1/index.json
+  # the MCP registry's proof that we hold cantonvenues.com (public key only; the private half is not on the box)
+  install -D -m 644 current/examples/canton_venues/site/.well-known/mcp-registry-auth /var/www/canton-venues/.well-known/mcp-registry-auth
   # the build page changes only with the code: written once per deploy (build_page.py)
   (cd current/examples/canton_venues && /opt/canton-venues/.venv/bin/python build_page.py --out /var/www/canton-venues)
   install -m 644 current/examples/canton_venues/deploy/canton-venues.service current/examples/canton_venues/deploy/canton-venues-mcp.service current/examples/canton_venues/deploy/canton-venues-contact.service \
