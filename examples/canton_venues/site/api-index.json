@@ -91,7 +91,7 @@
     {
       "name": "exit",
       "url": "https://cantonvenues.com/api/v1/exit.json",
-      "about": "what selling each token for USDCx nets, as a share of its value at our price: a ladder from $1K to $1M per venue and at the best one; the largest sale each venue (and all together) takes within 1%, 2% and 5%, with what limited it (the cost, or the end of a venue's visible order book); the worst share at $10K and $50K since worst_since"
+      "about": "what selling each token for USDCx nets, as a share of its value at our price: a ladder from $1K to $1M per venue and at the best one, plus across_venues when selling the token for CC on one venue and that CC for USDCx on another keeps more; the largest sale each venue (and all together) takes within 1%, 2% and 5%, with what limited it (the cost, or the end of a venue's visible order book); the worst share at $10K and $50K since worst_since"
     },
     {
       "name": "volume",

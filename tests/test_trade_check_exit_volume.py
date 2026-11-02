@@ -266,3 +266,41 @@ def test_exit_and_ledger_files_round_trip_as_json():
     with m.fees_from(FEES):
         doc = exit_cost.build(_raw(), TOKENS, T0)
     assert json.loads(json.dumps(doc))["sell_for"] == "USDCx"
+
+
+# --- exit cost on two venues (2026-11-02) ---------------------------------------------------------------
+
+SPYE_TOKENS = TOKENS + [{"key": "SPYE", "symbol": "SPYe", "price_usd": 600.0}]
+
+
+def _with_spye(venue: str) -> dict:
+    """_raw() plus a SPYe/CC pool ($60K a side at $600 and CC $0.10) on ``venue`` alone."""
+    raw = _raw()
+    raw["pools"]["SPYE"] = {venue: {"venue": venue, "token": "SPYe", "cc_reserve": "600000", "token_reserve": "100",
+                                    "formula": "cp", "fee_param": "0.003", "fee": "0.003", "lp_share": "0"}}
+    return raw
+
+
+def test_a_token_on_one_pool_also_gets_the_sale_with_its_cc_sold_where_cc_is_deepest():
+    with m.fees_from(FEES):
+        doc = exit_cost.build(_with_spye("oneswap"), SPYE_TOKENS, T0)
+    row = next(x for x in doc["tokens"] if x["key"] == "SPYE")
+    step = next(x for x in row["ladder"] if x["usd"] == 10_000)
+    assert step["best_venue"] == "oneswap"  # the only venue with SPYe: both legs there
+    two = step["across_venues"]
+    assert two["token_to_cc"] == "oneswap" and two["cc_to_usdcx"] == "tradecraft"
+    # the same math by hand: SPYe for CC on oneswap less its $1.30 fee in CC, that CC for USDCx on tradecraft less $0.10
+    amount = D(10_000) / D(600)
+    cc = _cp("100", "600000", amount) - D("1.30") / D(str(CC_USD))
+    usd = _cp("1000000", "100000", cc) - D("0.10")
+    assert two["share"] == pytest.approx(float(usd / D(10_000)), abs=1e-6)
+    assert two["share"] > step["best"]
+
+
+def test_no_second_figure_for_cc_or_when_one_venue_is_best_for_both_legs():
+    with m.fees_from(FEES):
+        doc = exit_cost.build(_with_spye("tradecraft"), SPYE_TOKENS, T0)
+    cc = next(x for x in doc["tokens"] if x["key"] == "CC")
+    assert all(s["across_venues"] is None for s in cc["ladder"])
+    spye = next(x for x in doc["tokens"] if x["key"] == "SPYE")
+    assert all(s["across_venues"] is None for s in spye["ladder"])  # tradecraft is best for both legs

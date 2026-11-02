@@ -304,7 +304,8 @@ def perps(base: str | None = None) -> dict:
 @server.tool(title="Exit cost: what selling a token for dollars nets")
 def exit_cost(symbol: str, amount_usd: float | None = None) -> dict:
     """What selling a token for dollars (USDCx) nets on Canton, as a share of its value at our price:
-    a ladder from $1K to $1M per venue and at the best one, the largest sale each venue (and all of
+    a ladder from $1K to $1M per venue and at the best one (with across_venues when selling the token
+    for CC on one venue and that CC for dollars on another keeps more), the largest sale each venue (and all of
     them together) takes within 1%, 2% and 5%, what limited each (the cost, or the end of a venue's
     visible order book), and the worst share at $10K and $50K since the record began. For lending,
     vault and risk tools: what collateral sells for on Canton, not only what it is quoted at. With

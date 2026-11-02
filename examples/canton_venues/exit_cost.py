@@ -5,7 +5,9 @@ one swap or two, as best execution compares them), after pool fees, book fees, p
 venue's network fee (``model.venue_quotes``). Every figure is a share of the sale's value at our
 price for the token (tokens.json, liquidity-weighted across venues): 0.98 means 2% lost to costs.
 
-- ``ladder``: the share each size from $1K to $1M keeps, per venue and at the best one.
+- ``ladder``: the share each size from $1K to $1M keeps, per venue and at the best one; and
+  ``across_venues`` when selling on two venues keeps more: the token for CC on one, that CC for USDCx
+  on another (``token_to_cc``, ``cc_to_usdcx``), each after its own network fee; null otherwise.
 - ``capacity``: the largest sale each venue takes within 1%, 2% and 5% of value; ``all_venues`` sums
   them (each venue sold on its own to that cost; a seller splitting a sale across venues gets about
   the sum, a little more since each piece is smaller). ``limited_by`` says what stopped each venue:
@@ -72,6 +74,34 @@ def _capacity(share, band: Decimal) -> tuple[float, str]:
     return lo, ("book" if share(hi) is None else "band")
 
 
+def _net_best(quotes: dict) -> tuple[str, Decimal] | None:
+    """(venue, output after its network fee) of the venue that returns the most, or None."""
+    nets = {v: got - fee for v, (got, _, fee) in quotes.items() if got > 0 and fee is not None and got > fee}
+    if not nets:
+        return None
+    v = max(nets, key=nets.get)
+    return v, nets[v]
+
+
+def across_venues(raw: dict, hops: dict, k: str, amount: Decimal, price: Decimal,
+                  dollar_usd: Decimal) -> dict | None:
+    """The sale in two legs on two venues: the token for CC where it returns the most CC, then that CC
+    for USDCx where it returns the most, each after its venue's network fee. For a token that trades
+    against CC on one pool while CC itself is deepest on another venue (SPYe on Cantex, CC on Temple),
+    one venue understates what a seller keeps. None for CC itself, when one venue is best for both
+    legs (the one-venue figure already prices that route) or when a leg cannot fill. Moving the CC
+    from one venue to the other is not priced: about one network fee, small beside a $1K sale."""
+    if k == m.CC:
+        return None
+    leg1 = _net_best(m.venue_quotes(raw, k, m.CC, amount, Decimal(str(raw["cc_usd"])), hops))
+    if leg1 is None:
+        return None
+    leg2 = _net_best(m.venue_quotes(raw, m.CC, DOLLAR, leg1[1], dollar_usd, hops))
+    if leg2 is None or leg2[0] == leg1[0]:
+        return None
+    return {"share": _r(leg2[1] * dollar_usd / (amount * price)), "token_to_cc": leg1[0], "cc_to_usdcx": leg2[0]}
+
+
 def token_exit(raw: dict, hops: dict, k: str, symbol: str, price: Decimal, dollar_usd: Decimal) -> dict | None:
     """One token's row, or None when no venue sells it for dollars in one or two swaps. ``hops`` is
     ``model.venue_hops(raw)``, built once a tick."""
@@ -85,8 +115,12 @@ def token_exit(raw: dict, hops: dict, k: str, symbol: str, price: Decimal, dolla
         per = {v: _share(q, amount, price, dollar_usd) for v, q in quotes.items()}
         filled = {v: s for v, s in per.items() if s is not None}
         best = max(filled, key=filled.get) if filled else None
+        # the second figure: kept only where two venues beat the best single one
+        two = across_venues(raw, hops, k, amount, price, dollar_usd)
+        if two is not None and (best is None or two["share"] <= _r(filled[best])):
+            two = None
         ladder.append({"usd": usd, "best_venue": best, "best": _r(filled.get(best)),
-                       "by_venue": {v: _r(s) for v, s in per.items()}})
+                       "by_venue": {v: _r(s) for v, s in per.items()}, "across_venues": two})
     capacity = {f"{int(b * 100)}pct": {"by_venue": {}, "limited_by": {}} for b in BANDS}
     for v in venues:
         seen: dict[float, Decimal | None] = {}
