@@ -28,6 +28,7 @@ import os
 import time
 from decimal import Decimal
 from pathlib import Path
+from typing import Annotated, Literal
 
 import anyio
 import httpx
@@ -36,6 +37,8 @@ import trade_check
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import Icon, ToolAnnotations
+from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -48,6 +51,46 @@ CACHE_S = 30
 SITE = "https://cantonvenues.com"
 
 _cache: dict[str, tuple[float, object]] = {}
+
+# every tool only reads data the collector already published: nothing is executed, stored or sent
+READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
+Symbol = Annotated[str, Field(description="Token symbol as Canton DEXes name it, e.g. CC (Canton Coin), CBTC, USDCx; "
+                                          "list_tokens() gives every symbol")]
+
+# one JSON line per tool call and per client handshake, in the state directory (never served): which tool,
+# which client software, from where, when, and whether it answered. Arguments are not kept
+CALL_LOG = Path(STATE_DIR) / "mcp-calls.jsonl" if STATE_DIR else None
+
+
+def _record_call(ctx, ok: bool) -> None:
+    try:
+        params = ctx.params or {}
+        req = ctx.request
+        client = getattr(req, "client", None)
+        row = {"t": int(time.time()), "method": ctx.method, "ok": ok, "ip": client.host if client else None}
+        if ctx.method == "tools/call":
+            row["tool"] = params.get("name")
+        else:
+            info = params.get("clientInfo") or {}
+            row["client"] = f"{info.get('name')}/{info.get('version')}"
+        with CALL_LOG.open("a") as f:
+            f.write(json.dumps(row) + "\n")
+    except Exception:  # the log never fails a call
+        pass
+
+
+async def log_calls(ctx, call_next):
+    if CALL_LOG is None or ctx.method not in ("tools/call", "initialize"):
+        return await call_next(ctx)
+    ok = False
+    try:
+        result = await call_next(ctx)
+        # a tool's own error comes back as a result marked isError, as a model or as a dict
+        failed = result.get("isError") if isinstance(result, dict) else getattr(result, "is_error", False)
+        ok = not failed
+        return result
+    finally:
+        _record_call(ctx, ok)
 
 
 def load(name: str):
@@ -96,11 +139,13 @@ server = MCPServer(
         "made against every venue at that time. Nothing here executes a trade."
     ),
     website_url=SITE,
-    version="1.0.0",
+    icons=[Icon(src=f"{SITE}/icon.png", mime_type="image/png", sizes=["640x640"])],
+    version="1.0.1",
+    middleware=[log_calls],
 )
 
 
-@server.tool(title="Canton DEX market overview")
+@server.tool(title="Canton DEX market overview", annotations=READ_ONLY)
 def market_overview() -> dict:
     """Canton DEX market right now: CC price, spot volume per venue we read, Canton's TVL for the day
     named, top movers, the largest premiums to global prices, and the latest alerts."""
@@ -134,8 +179,13 @@ def market_overview() -> dict:
     }
 
 
-@server.tool(title="List Canton DEX tokens")
-def list_tokens(sort_by: str = "liquidity", limit: int = 30) -> dict:
+@server.tool(title="List Canton DEX tokens", annotations=READ_ONLY)
+def list_tokens(
+    sort_by: Annotated[Literal["liquidity", "volume", "change_24h", "change_7d", "premium"], Field(
+        description="Order of the list, largest first: liquidity (USD), volume (24h USD), change_24h, change_7d, "
+                    "or premium (largest gap to the outside price, either sign)")] = "liquidity",
+    limit: Annotated[int, Field(description="How many tokens to return, 1 to 100")] = 30,
+) -> dict:
     """Every token on Canton DEXes with price, 24h/7d change, liquidity and volume.
     sort_by: liquidity, volume, change_24h, change_7d or premium."""
     keys = {"liquidity": "liquidity_usd", "volume": "volume_24h_usd", "change_24h": "change_24h",
@@ -152,8 +202,8 @@ def list_tokens(sort_by: str = "liquidity", limit: int = 30) -> dict:
     return {"as_of": load("tokens")["t"], "tokens": rows[:max(1, min(limit, 100))]}
 
 
-@server.tool(title="Token detail")
-def token(symbol: str) -> dict:
+@server.tool(title="Token detail", annotations=READ_ONLY)
+def token(symbol: Symbol) -> dict:
     """One token: price, changes, liquidity and volume, price on each venue, premium to its outside
     reference, its pools with fee APR, and hourly USD prices for the last 7 days."""
     t = _token_row(symbol)
@@ -175,8 +225,15 @@ def token(symbol: str) -> dict:
     }
 
 
-@server.tool(title="Quote a trade on Canton DEXes")
-def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | None = None) -> dict:
+@server.tool(title="Quote a trade on Canton DEXes", annotations=READ_ONLY)
+def quote(
+    sell: Annotated[str, Field(description="Symbol of the token sold, e.g. CC")],
+    buy: Annotated[str, Field(description="Symbol of the token bought, e.g. USDCx")],
+    amount: Annotated[float | None, Field(
+        description="How much of the sold token, in its own units. Give this or amount_usd, not both")] = None,
+    amount_usd: Annotated[float | None, Field(
+        description="Size of the sale in US dollars at our price of the sold token. Give this or amount, not both")] = None,
+) -> dict:
     """Best execution for selling `amount` of token `sell` (or `amount_usd` worth) for token `buy`, on
     every venue that can make the trade on its own markets in one or two swaps: an AMM pool (Cantex,
     Tradecraft, OneSwap, Pool Party), an order book (Temple, Rocky), or two of them in a row on the same
@@ -240,8 +297,12 @@ def quote(sell: str, buy: str, amount: float | None = None, amount_usd: float | 
             "network_fees": {"included": "after_network_fee, per swap", "per_trade": fee_table}}
 
 
-@server.tool(title="Canton premium to global prices")
-def premiums(kind: str = "all") -> dict:
+@server.tool(title="Canton premium to global prices", annotations=READ_ONLY)
+def premiums(
+    kind: Annotated[Literal["all", "reference", "peg"], Field(
+        description="reference: tokens priced against an outside market (CBTC vs BTC, cETH vs ETH, eXAU, eXAG, CC); "
+                    "peg: stablecoins against $1; all: both")] = "all",
+) -> dict:
     """How far Canton DEX prices sit from outside markets: CBTC vs BTC, cETH vs ETH, eXAU and eXAG vs
     gold and silver spot (while the spot market trades), CC vs global CC, and every stablecoin vs $1.
     kind: all, reference or peg."""
@@ -253,8 +314,8 @@ def premiums(kind: str = "all") -> dict:
         for a in rows]}
 
 
-@server.tool(title="Cross-venue spreads")
-def spreads(limit: int = 10) -> dict:
+@server.tool(title="Cross-venue spreads", annotations=READ_ONLY)
+def spreads(limit: Annotated[int, Field(description="How many routes to return, best first, 1 to 50")] = 10) -> dict:
     """Buy-on-one-venue, sell-on-the-other round trips at their best size, after each venue's network
     fee: `cost_cc` per route, `swap_cost_cc` per venue (Cantex measured, OneSwap and Tradecraft
     documented, the rest assumed at 1.5 CC). A trip through an order book in dollars (via=usd) also
@@ -263,16 +324,20 @@ def spreads(limit: int = 10) -> dict:
     return {"as_of": s["t"], "swap_cost_cc": s.get("swap_cost_cc"), "routes": s["routes"][:max(1, min(limit, 50))]}
 
 
-@server.tool(title="Recent alerts")
-def alerts(limit: int = 20) -> dict:
+@server.tool(title="Recent alerts", annotations=READ_ONLY)
+def alerts(limit: Annotated[int, Field(description="How many of the latest alerts to return, 1 to 300")] = 20) -> dict:
     """Alerts fired on Canton DEXes: stablecoin peg breaks, premiums over 1%, hourly moves over 5%,
     and spreads that clear their costs. Newest last."""
     feed = load("alerts").get("feed", [])
     return {"alerts": feed[-max(1, min(limit, 300)):], "channel": "https://t.me/cantonvenues"}
 
 
-@server.tool(title="Liquidity pools")
-def pools(sort_by: str = "tvl", limit: int = 20) -> dict:
+@server.tool(title="Liquidity pools", annotations=READ_ONLY)
+def pools(
+    sort_by: Annotated[Literal["tvl", "volume", "apr"], Field(
+        description="Order of the list, largest first: tvl (USD), volume (24h USD) or apr (LP fee APR)")] = "tvl",
+    limit: Annotated[int, Field(description="How many pools to return, 1 to 60")] = 20,
+) -> dict:
     """CC pools on every AMM (Cantex, Tradecraft, OneSwap, Pool Party) with liquidity, 24h volume where
     the venue publishes it, fee and LP fee APR from the last 24 hours of volume; a pool whose reserves
     have stood still while its price left the market carries `not_trading_since`. sort_by: tvl, volume
@@ -284,7 +349,7 @@ def pools(sort_by: str = "tvl", limit: int = 20) -> dict:
     return {"as_of": load("lp")["t"], "pools": rows[:max(1, min(limit, 60))]}
 
 
-@server.tool(title="Canton venues and coverage")
+@server.tool(title="Canton venues and coverage", annotations=READ_ONLY)
 def venues() -> dict:
     """Every Canton trading venue we know of: type, 24h volume, and whether we price it live,
     see its volume only, or cannot read it (key needed, testnet, no public API). Also the share of
@@ -292,8 +357,9 @@ def venues() -> dict:
     return load("venues")
 
 
-@server.tool(title="Perpetual futures")
-def perps(base: str | None = None) -> dict:
+@server.tool(title="Perpetual futures", annotations=READ_ONLY)
+def perps(base: Annotated[str | None, Field(
+        description="Only markets on this asset, e.g. BTC, ETH or CC; leave out for every market")] = None) -> dict:
     """Perp markets on Rocky, Ekiden and Canborsa: price, basis to the outside spot price, funding,
     spread, open interest and 24h volume where the venue publishes them. base filters by asset, e.g. BTC, ETH or CC."""
     d = load("perps")
@@ -301,8 +367,12 @@ def perps(base: str | None = None) -> dict:
     return {"as_of": d["t"], "markets": rows}
 
 
-@server.tool(title="Exit cost: what selling a token for dollars nets")
-def exit_cost(symbol: str, amount_usd: float | None = None) -> dict:
+@server.tool(title="Exit cost: what selling a token for dollars nets", annotations=READ_ONLY)
+def exit_cost(
+    symbol: Symbol,
+    amount_usd: Annotated[float | None, Field(
+        description="Optional: one sale of this size in US dollars, priced now on every venue")] = None,
+) -> dict:
     """What selling a token for dollars (USDCx) nets on Canton, as a share of its value at our price:
     a ladder from $1K to $1M per venue and at the best one (with across_venues when selling the token
     for CC on one venue and that CC for dollars on another keeps more), the largest sale each venue (and all of
@@ -328,9 +398,18 @@ def exit_cost(symbol: str, amount_usd: float | None = None) -> dict:
     return out
 
 
-@server.tool(title="Check a trade against every Canton venue at that time")
-def check_trade(sell: str, buy: str, amount_in: float, amount_out: float, time: str,
-                venue: str | None = None) -> dict:
+@server.tool(title="Check a trade against every Canton venue at that time", annotations=READ_ONLY)
+def check_trade(
+    sell: Annotated[str, Field(description="Symbol of the token sold, e.g. CC")],
+    buy: Annotated[str, Field(description="Symbol of the token bought, e.g. USDCx")],
+    amount_in: Annotated[float, Field(description="How much of the sold token went in, in its own units")],
+    amount_out: Annotated[float, Field(description="How much of the bought token came back, in its own units")],
+    time: Annotated[str, Field(
+        description="When the trade ran: ISO 8601 such as 2026-10-27T18:05:00Z, or unix seconds; the archive "
+                    "starts 27 Oct 2026 21:01 UTC")],
+    venue: Annotated[str | None, Field(
+        description="Optional: the venue it ran on, e.g. cantex, tradecraft, oneswap, temple, rocky or poolparty")] = None,
+) -> dict:
     """Was a trade well executed? Give the token sold and bought, the amount sold, the amount received,
     the time (ISO such as 2026-10-27T18:05:00Z, or unix seconds) and optionally the venue. The trade
     is priced again on every venue from the pool reserves and order books read at the five-minute
