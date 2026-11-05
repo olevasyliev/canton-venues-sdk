@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples" / "canto
 import model as m  # noqa: E402
 
 CX_FEE = float(m.NETWORK_FEE["cantex"][1])  # Cantex's network fee point, CC (measured)
+TC_FEE = float(m.NETWORK_FEE["tradecraft"][1])  # Tradecraft's, USD: none at the venue (our trades 2026-11-05)
 
 from cantonvenues.venues.cantex_public import swap_output as cx_out  # noqa: E402
 from cantonvenues.venues.tradecraft import swap_output as tc_out  # noqa: E402
@@ -84,8 +85,8 @@ def test_scan_deducts_the_network_cost_before_a_route_clears():
                   "tradecraft": tc_pool("X", 1_000_000, 1_000_000)}}
     routes = m.scan(flat, Decimal("0.12"))
     assert routes and not any(r["clears"] for r in routes)
-    # one swap on each venue: Cantex at its measured point (model.NETWORK_FEE), Tradecraft its documented $0.10
-    assert all(r["net_cc"] == pytest.approx(r["gross_cc"] - CX_FEE - 0.10 / 0.12) for r in routes)
+    # one swap on each venue: Cantex at its measured point (model.NETWORK_FEE), Tradecraft its measured fee
+    assert all(r["net_cc"] == pytest.approx(r["gross_cc"] - CX_FEE - TC_FEE / 0.12) for r in routes)
 
     skew = {"X": {"cantex": cantex_pool("X", 1_000_000, 1_000_000),
                   "tradecraft": tc_pool("X", 1_000_000, 900_000)}}
@@ -233,13 +234,14 @@ def test_usd_scan_only_adds_trips_that_touch_the_book():
     assert {(r["buy_on"], r["sell_on"]) for r in rows} == {
         ("cantex", "rocky"), ("rocky", "cantex"), ("tradecraft", "rocky"), ("rocky", "tradecraft")}
     # a pool route is two swaps on its own venue, each paying that venue's fee; the book one: three a trip
-    cost = {frozenset(("cantex", "rocky")): CX_FEE * 2 + 1.5, frozenset(("tradecraft", "rocky")): 2 * 0.10 / 0.122 + 1.5}
+    cost = {frozenset(("cantex", "rocky")): CX_FEE * 2 + 1.5, frozenset(("tradecraft", "rocky")): 2 * TC_FEE / 0.122 + 1.5}
     assert all(r["cost_cc"] == pytest.approx(cost[frozenset((r["buy_on"], r["sell_on"]))]) for r in rows)
 
 
 def test_swap_cost_uses_a_venues_own_stated_fee():
     assert m.swap_cost_cc("cantex", Decimal("0.125")) == m.NETWORK_FEE["cantex"][1]  # measured
-    assert m.swap_cost_cc("tradecraft", Decimal("0.125")) == Decimal("0.8")  # documented $0.10
+    assert m.swap_cost_cc("tradecraft", Decimal("0.125")) == Decimal("0")  # measured: none at the venue
+    assert m.swap_cost_cc("temple", Decimal("0.125")) == Decimal("0")  # documented: none per trade
     assert m.swap_cost_cc("rocky", Decimal("0.125")) == Decimal("1.5")  # assumed
     assert m.swap_cost_cc("oneswap", Decimal("0.125")) == Decimal("10.4")  # its measured $1.30 at $0.125
 
@@ -271,9 +273,9 @@ def test_execution_rows_carry_figures_net_of_each_venues_network_fee():
              "tradecraft": tc_pool("USDCx", 6_000_000, 735_000)}
     rows = m.ladder(pools, Decimal("0.1225"), Decimal("0.1225"))
     r = next(x for x in rows if x["side"] == "sell" and x["size_usd"] == 100)
-    # selling CC returns USDCx at $1: the fee comes off in dollars, Cantex its point in CC, Tradecraft $0.10
+    # selling CC returns USDCx at $1: the fee comes off in dollars, Cantex its point in CC, Tradecraft its own
     assert r["out_net"]["cantex"] == pytest.approx(r["out"]["cantex"] - CX_FEE * 0.1225)
-    assert r["out_net"]["tradecraft"] == pytest.approx(r["out"]["tradecraft"] - 0.10)
+    assert r["out_net"]["tradecraft"] == pytest.approx(r["out"]["tradecraft"] - TC_FEE)
     assert r["best_net"] == max(r["out_net"], key=r["out_net"].get)
     assert m.fee_known("tradecraft") and not m.fee_known("poolparty")
 
@@ -288,4 +290,4 @@ def test_execution_history_keeps_one_sample_an_hour(tmp_path):
     assert exec_history.record(tmp_path, t0 + 3600, pairs, m.fee_table_json())
     lines = [json.loads(x) for f in sorted(tmp_path.glob("*.jsonl")) for x in f.read_text().splitlines()]
     assert len(lines) == 2 and lines[0]["rows"][0] == ["USDCX", "sell", 100, "cantex", 3.0, "tradecraft", 1.5]
-    assert lines[0]["network_fee"]["tradecraft"]["point"] == 0.10
+    assert lines[0]["network_fee"]["tradecraft"]["point"] == TC_FEE

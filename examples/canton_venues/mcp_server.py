@@ -317,8 +317,8 @@ def premiums(
 @server.tool(title="Cross-venue spreads", annotations=READ_ONLY)
 def spreads(limit: Annotated[int, Field(description="How many routes to return, best first, 1 to 50")] = 10) -> dict:
     """Buy-on-one-venue, sell-on-the-other round trips at their best size, after each venue's network
-    fee: `cost_cc` per route, `swap_cost_cc` per venue (Cantex measured, OneSwap and Tradecraft
-    documented, the rest assumed at 1.5 CC). A trip through an order book in dollars (via=usd) also
+    fee: `cost_cc` per route, `swap_cost_cc` per venue (Cantex and OneSwap their own quotes, checked
+    against our trades; Tradecraft and Temple none per trade; Rocky and Pool Party assumed at 1.5 CC). A trip through an order book in dollars (via=usd) also
     pays the CC/USDCx leg of each pool side. `clears` is true when one nets at least $0.50."""
     s = load("scan")
     return {"as_of": s["t"], "swap_cost_cc": s.get("swap_cost_cc"), "routes": s["routes"][:max(1, min(limit, 50))]}

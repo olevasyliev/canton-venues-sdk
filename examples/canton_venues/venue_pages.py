@@ -86,14 +86,22 @@ VOLUME_BASIS = {"temple": "usd", "tradecraft": "usd", "cantex": "cc", "poolparty
 
 # What the page states about how each venue is read, next to the numbers it qualifies.
 CAVEATS = {
-    "temple": ["Taker fee 1 bp is Temple's published rate.",
+    "temple": ["Taker fee 3 bps is Temple's rate on its Lightspeed v2 engine (Temple's help center, \"Temple "
+               "Lightspeed v2\", 21 Sep 2026), though its older \"Fees & Rebates\" article still says 1 bp.",
+               "No network fee per trade: settlement is included, Temple's support said on 5 Nov 2026. Network "
+               "fees come only with deposits and withdrawals, charged by the trader's wallet (5 to 12 CC, "
+               "Temple's help center).",
                "Temple's CC/USDCx book is in every CC/USDCx comparison and in the CC price (weighted by "
                "its depth), not in the token list."],
-    "rocky": ["Taker fee 0.025% is assumed: Rocky publishes no fee schedule.",
+    "rocky": ["Taker fee 0.025% is the rate in Rocky's own example on its homepage; it publishes no fee "
+              "schedule. Its network fee per trade is our assumption (1.5 CC).",
               "Books quoted in USDC.B are valued at par ($1), not at USDC.B's pool price.",
               "Its USDC.B books count as dollars at par in dollar routes while USDC.B holds within 1% of $1."],
     "oneswap": ["Volume is not published, so OneSwap has no volume figure or volume rank.",
-                "Priced from reserves as a constant-product pool with a 0.30% fee."],
+                "Priced from reserves as a constant-product pool with a 0.30% fee.",
+                "Network fee per trade: OneSwap's own quote, taken from the amount sold, read every hour. "
+                "Our own trades on 5 Nov 2026 returned what it quoted (12.20 CC selling CC, 1.47 USDCx "
+                "selling USDCx)."],
     "poolparty": ["Fee (0.30%) from CCTools; priced from reserves as a constant-product pool.",
                   "Pool Party publishes no issuer, so its tokens match by instrument id."],
     "ekiden": ["MainNet tickers, mark, index and funding from the public API."],
@@ -104,8 +112,13 @@ CAVEATS = {
                  "dollar tokens), each counted at $1. It publishes no 24h volume or open interest.",
                  "Not shown as book depth: one order is capped at $20K to $50K of position size (its docs, "
                  "\"Order size limits\"), far under the depth its orders fill against."],
-    "cantex": ["Priced from live reserves with Cantex's own pool formula."],
-    "tradecraft": ["Priced from live reserves with Tradecraft's own pool formula."],
+    "cantex": ["Priced from live reserves with Cantex's own pool formula.",
+               "Network fee per trade: Cantex's own quote for each pair, read every hour. Our own trades on "
+               "2 Nov 2026 were charged exactly that (2.00 CC each way on CC/USDCx)."],
+    "tradecraft": ["Priced from live reserves with Tradecraft's own pool formula.",
+                   "No network fee at the venue: our own trades on 5 Nov 2026 returned exactly Tradecraft's "
+                   "quote, its 0.30% pool fee and nothing more. The sender's wallet may charge for the "
+                   "transfer (up to 1 CC in our trades)."],
 }
 
 # A market this thin is not a competitor. A pool counts when its liquidity (both sides of its
@@ -1604,7 +1617,7 @@ def _shell(title: str, desc: str, canonical: str, image: str | None, body: str, 
 {body}
   <footer class="foot">
     <div><h4>Canton Venues</h4><p>Built by <a href="https://github.com/olevasyliev">Oleksii</a> on <a href="https://github.com/olevasyliev/canton-venues-sdk">Canton Venues SDK</a>, open source. Read-only: nothing here is signed or executed.</p><p><a href="https://t.me/cantonvenues">Telegram channel</a>, <a href="https://x.com/cantonvenues">X</a>, <a href="/#contact">contact</a></p><p>Updated {e(stamp(t))}.</p></div>
-    <div><h4>Method</h4><p>Pools are priced from live reserves with each venue's own formula, order books from their books. Best execution compares what each venue returns for the same amount, pool fees, price impact and each venue's network fee included. Volumes are each venue's 24h figures; where a venue reports token amounts rather than dollars we convert them, and each venue's page says how.</p></div>
+    <div><h4>Method</h4><p>Pools are priced from live reserves with each venue's own formula, order books from their books. Best execution compares what each venue returns for the same amount, pool fees, price impact and each venue's network fee included. What the trader's own wallet charges is not: it depends on the wallet (in our own trades, up to 1 CC per transfer sent), and on an order book the wallet pays only to deposit and withdraw. Volumes are each venue's 24h figures; where a venue reports token amounts rather than dollars we convert them, and each venue's page says how.</p></div>
     <div><h4>Data</h4><p>Every number on this page is in the open JSON API: <a href="/api/v1/venues.json">venues</a>, <a href="/api/v1/execution.json">execution</a>, <a href="/api/v1/tokens.json">tokens</a>, <a href="/api/v1/lp.json">pools</a>, <a href="/api/v1/perps.json">perps</a>, <a href="/api/v1/venue_history.json">venue history</a>.</p></div>
   </footer>
 </main>

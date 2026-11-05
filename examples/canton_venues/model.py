@@ -349,19 +349,24 @@ NETWORK_FEE: dict[str, tuple[str, Decimal, Decimal, Decimal, str]] = {
     # third within two hours (CC/USDCx 3.42, 3.49, 3.13, 2.34; 0.86 flat, measured 03.10, is out of
     # date). Each pair's own fee comes from quotecheck.py every hour (``PAIR_FEE_CC``); this is the
     # stand-in when that record is stale, with headroom around what was seen. A best-price claim must
-    # survive the range.
+    # survive the range. Our own two trades on 2026-11-02 were charged exactly its quote (2.00 CC each way).
     "cantex": ("cc", Decimal("1.10"), Decimal("0.70"), Decimal("3.60"), "measured"),
     # OneSwap's own quotes (our SDK key), 2026-10-15: carved from the input, the same at any size, $1.10
     # to $1.24 selling CC and $1.33 to $1.48 selling the token, on its four pools of $20K+ (its docs said
-    # "typically around $1.5-2"). Each pair and direction's own fee comes from quotecheck.py hourly.
+    # "typically around $1.5-2"). Each pair and direction's own fee comes from quotecheck.py hourly. Our
+    # own two trades on 2026-11-05 (50 CC and 3 USDCx) returned what its quote said, fee included.
     "oneswap": ("usd", Decimal("1.30"), Decimal("1.00"), Decimal("2.00"), "measured"),
-    # docs.tradecraft.fi/fees-and-pricing "Gas: $0.10" (illustrative); high end: its DAR guide sizes an
-    # immediate swap at ~23 kB, $1.38 at MainNet's 60 USD/MB with no free burst left. Checked 2026-10-08.
-    "tradecraft": ("usd", Decimal("0.10"), Decimal("0.10"), Decimal("1.40"), "documented"),
-    # Temple and Rocky trade from a deposited balance and settle on the trader's behalf (Rocky in
-    # 5-second batches); neither states a per-trade network cost (checked 2026-10-08). Pool Party shows
-    # a per-swap "Network fee" in its app, only to a signed-in wallet. All three: the default assumption.
-    "temple": ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed"),
+    # Tradecraft charges nothing per trade beyond its pool fee: our own two trades on 2026-11-05 (1 USDCx
+    # and 10 CC sent to its CC/USDCx pool address) returned exactly its quote, the full 0.30% pool fee and
+    # nothing more. What the sender's wallet charges for the transfer is the wallet's, not the venue's
+    # (a Cantex account paid 1 CC sending CC, nothing sending USDCx). Its docs' "Gas: $0.10" was that.
+    "tradecraft": ("usd", Decimal("0"), Decimal("0"), Decimal("0"), "measured"),
+    # Temple: no network fee per trade, settlement included; network fees apply only to deposits and
+    # withdrawals, charged by the wallet (Temple's support, 2026-11-05; help center "Deposits &
+    # Withdrawals"). Rocky trades from a deposited balance and settles in 5-second batches but states no
+    # per-trade network cost; Pool Party shows a per-swap "Network fee" only to a signed-in wallet (both
+    # checked 2026-10-08). Those two: the default assumption.
+    "temple": ("cc", Decimal("0"), Decimal("0"), Decimal("0"), "documented"),
     "rocky": ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed"),
     "poolparty": ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed"),
 }
@@ -473,8 +478,10 @@ def path_fee_usd(venue: str, path: tuple, cc_in_usd: Decimal, start: str | None 
 # Rocky publishes no fee schedule; its homepage example charges 0.025% per order and says the app
 # is the source of truth. An assumption until the app or their docs say otherwise.
 BOOK_TAKER_FEE = {"rocky": Decimal("0.00025"),
-                  # Temple: 1 bp taker, 0.5 bp maker (help center, "Fees & Rebates", read 2026-10-04)
-                  "temple": Decimal("0.0001")}
+                  # Temple: 3 bps taker, 1.5 bps maker on its Lightspeed v2 engine (help center, "Temple
+                  # Lightspeed v2", 2026-09-21; its support chat named the same rate 2026-11-05). Its "Fees &
+                  # Rebates" article still says 1 bp, and an account's fee tab showed 2.5 bps on 2026-11-05.
+                  "temple": Decimal("0.0003")}
 
 
 @dataclass(frozen=True)

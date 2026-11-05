@@ -15,8 +15,10 @@ is the largest venue on the network by volume. Two surfaces:
   ``{"trades": [...]}``), numbers arrive as JSON numbers, the ticker carries no
   bid/ask, and trades are stamped ``created_at``. Without a key these methods
   raise ``VenueAuthError`` instead of calling out.
-- **Fees** (help.templedigitalgroup.com, "Fees & Rebates", read 2026-10-04):
-  taker 1 bp, maker 0.5 bp, prepaid in USDCx; deposits and withdrawals cost
+- **Fees** (help.templedigitalgroup.com, "Temple Lightspeed v2", 2026-09-21):
+  taker 3 bps, maker 1.5 bps, prepaid in USDCx (the older "Fees & Rebates"
+  article still says 1 bp and 0.5 bp). No network fee per trade, settlement
+  included (Temple's support, 2026-11-05); deposits and withdrawals cost
   5-12 CC through the partner wallets.
 
 Venue-shape notes:
@@ -60,7 +62,7 @@ from ..core.venue import OrderTradingAdapter, TradingDisabledError, VenueAuthErr
 MAINNET_BASE_URL = "https://api.templedigitalgroup.com"
 TESTNET_BASE_URL = "https://api-testnet.templedigitalgroup.com"
 API_KEY_ENV = "TEMPLE_API_KEY"
-TAKER_FEE = Decimal("0.0001")  # 1 bp, Temple help center, "Fees & Rebates"
+TAKER_FEE = Decimal("0.0003")  # 3 bps, Temple help center, "Temple Lightspeed v2" (2026-09-21)
 
 
 def _dec(value: object) -> Decimal:

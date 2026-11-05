@@ -210,7 +210,9 @@ def execution_post(samples: list[dict], checked: set[str] | None = None) -> Post
     if assumed:
         n = (", ".join(assumed[:-1]) + " and " + assumed[-1]) if len(assumed) > 1 else assumed[0]
         each = next(f for f in fees.values() if f.get("basis") == "assumed")
-        note += f"; {n} publish no network fee, so theirs is assumed at {each['point']:g} {each['unit'].upper()}"
+        verb, own = ("publish", "theirs") if len(assumed) > 1 else ("publishes", "its fee")
+        note += (f"; {n} {verb} no network fee, so {own} is assumed at {each['point']:g} "
+                 f"{each['unit'].upper()}")
     lines += ["", note + ".", f'🔗 <a href="{SITE}/#execution">Live best execution</a>']
     return Post("execution", "\n".join(lines))
 

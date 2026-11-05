@@ -66,6 +66,6 @@ def test_execution_names_the_book_on_the_cc_usdcx_pair(tmp_path):
     pairs = c._execution({"USDCX": {"tradecraft": pool(), "temple": m.CCBook("temple", "USDCx", book())}}, CC_USD,
                          {"USDCX": Decimal(1)})
     assert pairs[0]["venues"] == ["temple", "tradecraft"] and pairs[0]["symbol"] == "USDCx"
-    assert pairs[0]["books"] == {"temple": {"market": "CC/USDCx", "fee": 0.0001}}
+    assert pairs[0]["books"] == {"temple": {"market": "CC/USDCx", "fee": 0.0003}}
     plain = c._execution({"USDCX": {"tradecraft": pool(), "cantex": pool("cantex")}}, CC_USD, {"USDCX": Decimal(1)})
     assert "books" not in plain[0]

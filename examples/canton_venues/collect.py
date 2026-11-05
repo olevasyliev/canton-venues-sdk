@@ -967,7 +967,7 @@ class Collector:
             note = v["note"]
             if v["id"] == "temple" and self.temple_priced:
                 status = "priced"
-                note = "Order books from Temple's API (account key); settled volume per market. Taker fee 1 bp."
+                note = "Order books from Temple's API (account key); settled volume per market. Taker fee 3 bps."
             rows.append({k: v[k] for k in ("id", "name", "kind")} | {
                 "note": note, "status": status,
                 "volume_24h_usd": r(vol, 2) if vol is not None else None})

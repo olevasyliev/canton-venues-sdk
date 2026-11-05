@@ -370,7 +370,9 @@ def test_execution_post_names_the_assumed_network_fees(tmp_path, monkeypatch):
                                 "venues": {"USDCX": ["cantex", "poolparty", "temple", "tradecraft"]},
                                 "rows": [["USDCX", "sell", 1000, "temple", 9.0, "temple", 10.0]]}) + "\n")
     post = channel.execution_post(channel.read_exec(tmp_path, now))
-    assert "Pool Party and Temple publish no network fee, so theirs is assumed at 1.5 CC" in post.html
+    # Temple states no per-trade network fee (its support, 2026-11-05): only Pool Party is assumed
+    assert "Pool Party publishes no network fee, so its fee is assumed at 1.5 CC" in post.html
+    assert "Temple publish" not in post.html
     assert "Rocky" not in post.html
 
 
