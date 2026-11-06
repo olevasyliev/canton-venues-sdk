@@ -50,3 +50,57 @@ def test_a_venue_with_cc_markets_and_no_volume_is_unknown_not_zero(tmp_path, mon
     v = s["cc_24h"]["venues"]
     assert "temple" in v and v["temple"] is None
     assert s["cc_24h"]["volume_usd"] == pytest.approx(v["cantex"])  # the total is what is known
+
+
+# --- Cantex's swap count moved to its own venue page; the MCP overview carries CC's volume -----------
+
+def test_cantex_swaps_show_on_cantexs_page_and_no_other():
+    import venue_pages as vp
+    from test_venue_pages import T, data
+
+    d = data()
+    d["summary"]["cantex_24h"] = {"volume_usd": 1_830_000, "swaps": 126_580}
+    f = vp.facts(d)
+    assert f["cantex"]["swaps_24h"] == 126_580
+    page = vp.venue_page(f["cantex"], vp.headline(f["cantex"]), T)
+    assert "Swaps, 24h" in page and "126,580" in page
+    assert "own count over every pool, from its public API" in page  # the method note
+    assert all("swaps_24h" not in x for s, x in f.items() if s != "cantex")
+    assert "Swaps, 24h" not in vp.venue_page(f["tradecraft"], vp.headline(f["tradecraft"]), T)
+
+
+def test_unknown_cantex_swaps_show_nothing_not_zero():
+    import venue_pages as vp
+    from test_venue_pages import T, data
+
+    d = data()
+    d["summary"]["cantex_24h"] = {"volume_usd": None, "swaps": None}
+    f = vp.facts(d)["cantex"]
+    assert "swaps_24h" not in f and "Swaps, 24h" not in vp.venue_page(f, vp.headline(f), T)
+
+
+def test_market_overview_gives_cc_volume_by_venue_not_cantex_swaps(tmp_path, monkeypatch):
+    pytest.importorskip("mcp")
+    import json
+
+    import mcp_server
+
+    api = tmp_path / "api"
+    api.mkdir()
+    files = {
+        "summary": {"t": 1, "cc_usd": 0.0977, "cantex_24h": {"swaps": 126_580},
+                    "cc_24h": {"volume_usd": 4_825_832.79,
+                               "venues": {"temple": 2_738_830.42, "cantex": 1_830_442.81, "oneswap": None}}},
+        "venues": {"venues": [{"id": "temple", "name": "Temple", "kind": "Spot order book", "volume_24h_usd": 14e6},
+                              {"id": "cantex", "name": "Cantex", "kind": "Spot AMM", "volume_24h_usd": 1.83e6},
+                              {"id": "oneswap", "name": "OneSwap", "kind": "Spot AMM", "volume_24h_usd": None}]},
+        "tokens": {"tokens": []}, "premium": {"assets": []}, "alerts": {"feed": []},
+    }
+    for n, x in files.items():
+        (api / f"{n}.json").write_text(json.dumps(x))
+    monkeypatch.setattr(mcp_server, "API_DIR", str(api))
+    mcp_server._cache.clear()
+    o = mcp_server.market_overview()
+    assert "cantex_swaps_24h" not in o
+    assert o["cc_volume_24h_usd"] == 4_825_832.79
+    assert o["cc_volume_by_venue_24h_usd"] == {"Temple": 2_738_830.42, "Cantex": 1_830_442.81, "OneSwap": None}

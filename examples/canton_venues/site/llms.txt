@@ -40,7 +40,7 @@ Example: `curl -s https://cantonvenues.com/api/v1/premium.json | jq '.assets[] |
 Streamable HTTP server at https://cantonvenues.com/mcp, read-only, no key. Add it in Claude as a custom connector, or in any MCP client as a streamable HTTP server.
 
 Tools:
-- market_overview(): Canton Coin price, spot volume by venue (our own reading), Canton TVL with its day, top movers, largest premiums, latest alerts
+- market_overview(): Canton Coin price and its 24h volume on each DEX, spot volume by venue (our own reading), Canton TVL with its day, top movers, largest premiums, latest alerts
 - list_tokens(sort_by="liquidity", limit=30): every token; sort_by liquidity, volume, change_24h, change_7d or premium
 - token(symbol): one token: price on each venue, premium to its outside reference, its pools, 7 days of hourly prices
 - quote(sell, buy, amount=None, amount_usd=None): price any amount on every venue by its best route on its own markets, one swap or two (as best execution compares them), pool and book fees and price impact included, before and after each venue's network fee

@@ -548,6 +548,13 @@ def facts(data: dict) -> dict[str, dict]:
                 f["kind_rank"], f["kind_n"] = _rank(kind_vol.get(main["kind"], {}), i)
                 if main["volume_24h_usd"]:
                     f["method"].append(volume_method(i, v["name"], cc_usd))
+            if i == "cantex":
+                # Cantex's own swap count over every pool, read with its volume (the home page's CC card
+                # showed it under CC's price until 6 Nov 2026); unknown is None, never 0 swaps
+                swaps = ((data.get("summary") or {}).get("cantex_24h") or {}).get("swaps")
+                if swaps is not None:
+                    f["swaps_24h"] = swaps
+                    f["method"].append("Swaps, 24h: Cantex's own count over every pool, from its public API.")
             perp_id = next((x for x in ids if rows.get(x, {}).get("kind") == "Perpetuals"), None)
             if perp_id:
                 f["perp_id"] = perp_id
@@ -1930,6 +1937,8 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
         st.append(("Spot volume, 24h", "Not published"))
     if f.get("spot_share"):
         st.append(("Share of spot volume", f"{f['spot_share'] * 100:.1f}%"))
+    if f.get("swaps_24h") is not None:
+        st.append(("Swaps, 24h", f"{f['swaps_24h']:,}"))
     if f.get("perp_volume") is not None:
         st.append(("Perps volume, 24h", money(f["perp_volume"])))
         if rank := page_rank(f["perp_rank"], f["perp_n"]):

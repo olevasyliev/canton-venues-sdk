@@ -147,11 +147,14 @@ server = MCPServer(
 
 @server.tool(title="Canton DEX market overview", annotations=READ_ONLY)
 def market_overview() -> dict:
-    """Canton DEX market right now: CC price, spot volume per venue we read, Canton's TVL for the day
-    named, top movers, the largest premiums to global prices, and the latest alerts."""
+    """Canton DEX market right now: CC price and CC's own 24h volume on each DEX (null where a venue
+    publishes no volume), spot volume per venue we read, Canton's TVL for the day named, top movers, the
+    largest premiums to global prices, and the latest alerts."""
     s = load("summary")
     v = load("venues")
     eco = s.get("ecosystem") or {}
+    cc = s.get("cc_24h") or {}
+    names = {x["id"]: x["name"] for x in v.get("venues", [])}
     toks = [t for t in load("tokens")["tokens"] if (t.get("liquidity_usd") or 0) >= 20_000
             and t["key"] not in m.STABLES and t.get("change_24h") is not None]
     toks.sort(key=lambda t: t["change_24h"], reverse=True)
@@ -170,7 +173,10 @@ def market_overview() -> dict:
                                          if x["kind"] != "Perpetuals" and x.get("volume_24h_usd")},
         "canton_defi_tvl_usd": eco.get("tvl"),
         "canton_defi_tvl_day": eco.get("tvl_day"),
-        "cantex_swaps_24h": (s.get("cantex_24h") or {}).get("swaps"),
+        # CC's own volume: every pool or book with CC on one side (summary.json cc_24h); it replaced
+        # Cantex's platform swap count here on 6 Nov 2026, as on the home page
+        "cc_volume_24h_usd": cc.get("volume_usd"),
+        "cc_volume_by_venue_24h_usd": {names.get(k, k): x for k, x in (cc.get("venues") or {}).items()},
         "top_gainers_24h": [{"symbol": t["symbol"], "change": t["change_24h"]} for t in toks[:5]],
         "top_losers_24h": [{"symbol": t["symbol"], "change": t["change_24h"]} for t in toks[::-1][:5]],
         "largest_premiums": [{"symbol": a["symbol"], "vs": a["reference"], "premium": a["premium"]} for a in prem[:5]],
