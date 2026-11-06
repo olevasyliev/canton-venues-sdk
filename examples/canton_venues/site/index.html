@@ -605,7 +605,6 @@ function renderTop() {
     <span>On two venues: <b>${s.on_two_venues}</b></span>
     ${vol == null ? "" : `<span>DEX spot volume 24h: <b>${money(vol)}</b> ${vch == null ? "" : chg(vch)}</span>`}
     ${e.tvl == null || !tvlDay ? "" : `<span title="DefiLlama's figure for ${tvlDay}">Canton DeFi TVL, ${tvlDay}: <b>${money(e.tvl)}</b></span>`}
-    <span>Cantex swaps 24h: <b>${(s.cantex_24h.swaps || 0).toLocaleString("en-US")}</b></span>
     <span>CC: <b>${price(s.cc_usd)}</b></span>
     <span class="sp ${stale ? "stale" : ""}">${stale ? "Last good data " : "Updated "}${ago(s.t)}</span>`;
   if (vol != null) {
@@ -622,12 +621,15 @@ function renderTop() {
   const pegKeys = new Set((D.premium?.assets || []).filter((a) => a.kind === "peg").map((a) => a.key));
   const movers = toks.filter((t) => t.change_24h != null && t.liquidity_usd >= 10000 && !pegKeys.has(t.key)).sort((a, b) => b.change_24h - a.change_24h).slice(0, 4);
   const ccTok = { symbol: "CC", image: s.cc_image };
+  // CC on every DEX we read, not one venue's figures (the card showed Cantex alone until 6 Nov)
+  const ccv = s.cc_24h || {}, ccVen = Object.entries(ccv.venues || {});
+  const ccSplit = ccVen.map(([v, x]) => `${V[v] || v}: ${x != null ? money(x) : v === "oneswap" ? "publishes no volume" : "not read"}`).join(", ");
   $("cards").innerHTML = `
     <div class="card"><h3><span class="name" style="font-size:14px">${icon(ccTok, 20)}Canton Coin</span>${chg(s.cc_change_24h)}</h3>
       <div class="big num">${price(s.cc_usd)}</div>
       <div class="muted" style="margin-bottom:8px">On Canton DEXes. Global markets: ${price(s.cc_global_usd)}</div>
-      <div class="row two"><span class="muted">Cantex volume 24h</span><b class="num">${money(s.cantex_24h.volume_usd)}</b></div>
-      <div class="row two"><span class="muted">Cantex swaps 24h</span><b class="num">${(s.cantex_24h.swaps || 0).toLocaleString("en-US")}</b></div></div>
+      <div class="row two"><span class="muted">DEX volume 24h</span><b class="num" title="${esc(ccSplit)}">${money(ccv.volume_usd)}</b></div>
+      <div class="row two"><span class="muted">Trades on</span><b class="num" title="${esc(ccVen.map(([v]) => V[v] || v).join(", "))}">${ccVen.length ? `${ccVen.length} ${ccVen.length === 1 ? "DEX" : "DEXes"}` : "–"}</b></div></div>
     <div class="card"><h3>DEX volume by venue <span class="muted">24h</span></h3>
       ${venues.slice(0, 4).map((v) => `<div class="row two"><span class="l"><span>${esc(v.name.replace(" Spot", ""))}</span></span><b class="num">${money(v.volume_24h)}</b></div><div class="vbar"><i style="width:${v.volume_24h / vmax * 100}%"></i></div>`).join("")}</div>
     <div class="card"><h3>Top gainers <a href="#tokens" data-sortlink="change_24h">More</a></h3>
@@ -1089,7 +1091,7 @@ function renderLP() {
 
 /* ---------- api ---------- */
 function renderAPI() {
-  const eps = [["summary", "Ecosystem figures and Cantex 24h stats"], ["tokens", "Every token: price, liquidity, volume, change, 7d sparkline"],
+  const eps = [["summary", "Canton Coin price and 24h volume on each DEX, ecosystem figures"], ["tokens", "Every token: price, liquidity, volume, change, 7d sparkline"],
     ["premium", "Canton price against outside markets and pegs"], ["execution", "Every venue at four sizes, both directions; order-book tokens also in dollars"],
     ["scan", "Every cross-venue round trip at its best size, after costs"], ["desk", "The paper desk's full record"],
     ["lp", "Pool liquidity, volume and fee APR"], ["venues", "Every Canton venue: type, 24h volume, what we read"],

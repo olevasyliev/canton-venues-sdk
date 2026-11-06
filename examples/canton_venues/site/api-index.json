@@ -6,7 +6,7 @@
     {
       "name": "summary",
       "url": "https://cantonvenues.com/api/v1/summary.json",
-      "about": "Canton Coin price, ecosystem figures, how many tokens and venues are priced, and the pools marked not trading"
+      "about": "Canton Coin price and its 24h volume on each DEX (cc_24h), Cantex's own 24h platform figures (cantex_24h), ecosystem figures, how many tokens and venues are priced, and the pools marked not trading"
     },
     {
       "name": "tokens",

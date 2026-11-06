@@ -991,6 +991,43 @@ class Collector:
                 "spot_priced_share": r(priced / total, 4) if total else None,
                 "perp_volume_24h_usd": r(sum(perp_vol.values()), 2)}
 
+    def _cc_volume(self, books, tickers, tc_states, cc_usd, now) -> dict:
+        """CC's own 24h volume on each DEX where it has a market we read: every pool and book with CC on
+        one side, in dollars. A DEX with CC markets and no volume figure this tick is None (OneSwap
+        publishes none; a read past its age limit), and the total is what is known. ``cantex_24h`` is all
+        of Cantex; this is CC on every venue (the home page's CC card showed Cantex alone until 6 Nov)."""
+        cc = float(cc_usd)
+        # every AMM pool we price pairs CC with a token, so each venue in the books has CC markets
+        out: dict[str, float | None] = {v: None for pools in books.values() for v in pools}
+        cx = [t for t in tickers if CC in (m.key(t["base_currency"]), m.key(t["target_currency"]))]
+        if cx:  # Cantex's tickers: its last read stands in for an hour, as for its venue volume
+            out["cantex"] = cc * sum(float(_num(t.get("target_volume") if m.key(t["target_currency"]) == CC
+                                                else t.get("base_volume")) or 0) for t in cx)
+        tc_cc = [st.amm_id for st in tc_states if CC in (st.token_a, st.token_b)]
+        if tc_cc and self._fresh("tc_volume", now):
+            tc_vol = self.slow.get("tc_volume") or {}
+            out["tradecraft"] = sum(tc_vol.get(a, 0.0) for a in tc_cc)
+        if "poolparty" in self.live and self.slow.get("pp_volume") is not None:
+            out["poolparty"] = self._pp_volume_usd(cc_usd)[1]  # the CC side of every CC pool, as its total
+        if self.temple_cc_book:
+            out.setdefault("temple", None)
+        if self._fresh("temple_volume", now, TEMPLE_MAX_AGE_S):
+            # Temple reports each market's volume in its quote token: USDCx counts as dollars (as in its
+            # venue total), CC at our CC price
+            got = [v if m.key(q) == USDCX else v * cc
+                   for s, v in (self.slow.get("temple_volume") or {}).items()
+                   for b, _, q in [s.partition("/")]
+                   if (m.key(b) == CC and m.key(q) == USDCX) or m.key(q) == CC]
+            if got:
+                out["temple"] = sum(got)
+        # Rocky's books this tick, each one's turnover in dollars the same way as its venue total
+        rk = [v for s, v in self.rocky_books.items() if CC in (m.key(s.split("-")[0]), m.key(s.split("-")[-1]))]
+        if rk:
+            out["rocky"] = sum(rk)
+        known = [v for v in out.values() if v is not None]
+        return {"volume_usd": r(sum(known), 2) if known else None,
+                "venues": {v: r(x, 2) for v, x in sorted(out.items(), key=lambda kv: -(kv[1] or 0))}}
+
     async def _gecko(self) -> dict:
         ids = sorted({g for g, _ in m.REFERENCES.values() if not g.startswith("spot:")}
                      | {USDCX_GECKO} | set(PERP_SPOT.values()))
@@ -1348,7 +1385,8 @@ class Collector:
             self._paper(cmp_books, cc_usd, cc_usd / prices[USDCX], scan, now)
         lp = self._lp(books, cc_usd, tickers, tc_states)
         summary = self._summary(cc_usd, cx_volume, gecko, series, now_ms, books, now,
-                                time.monotonic() - started)
+                                time.monotonic() - started,
+                                cc_24h=self._cc_volume(books, tickers, tc_states, cc_usd, now))
         venues = self._venues(summary["cantex_24h"]["volume_usd"], rocky_spot_vol, perps, now)
 
         write_json(self.api / "tokens.json", {"t": now, "tokens": tokens})
@@ -1929,7 +1967,7 @@ class Collector:
         vol = self.slow.get("temple_volume") or {}
         return {s: r(v, 2) for s, v in sorted(vol.items()) if v and v > 0 and s not in self.temple_read}
 
-    def _summary(self, cc_usd, cx_volume, gecko, series, now_ms, books, now, took) -> dict:
+    def _summary(self, cc_usd, cx_volume, gecko, series, now_ms, books, now, took, cc_24h=None) -> dict:
         # CC's change from our own samples of the price shown beside it (depth-weighted, Temple's book
         # in it) once a full day of them follows that step; Cantex's CC-USDCX candles before (its pools
         # read -13.5% on 2026-10-15 while the price shown fell 12.9%)
@@ -1947,7 +1985,9 @@ class Collector:
             "cc_change_24h": r(m.change(cc_series, now_ms, 86400_000)),
             "cc_global_usd": r(_gecko_usd(gecko, "canton-network", now), 8),
             "cc_image": self.slow.get("images", {}).get(CC),
-            # unknown (Cantex not read for over an hour, or a field missing) is None, never $0 or 0 swaps
+            # CC's 24h volume on every DEX we read, per venue (``_cc_volume``): the home page's CC card
+            "cc_24h": cc_24h,
+            # Cantex's own platform figures, every Cantex pool; unknown (Cantex not read for over an hour, or a field missing) is None, never $0 or 0 swaps
             "cantex_24h": {"volume_cc": r(volume_cc, 2),
                            "volume_usd": r(volume_cc * cc_usd, 2) if volume_cc is not None else None,
                            "swaps": int(swaps) if swaps is not None else None,

@@ -8,7 +8,7 @@ Venues read: Temple, Cantex, Tradecraft, OneSwap, Pool Party, Rocky (spot and pe
 
 Base URL: https://cantonvenues.com/api/v1/ (opening it returns this endpoint list as JSON). Every snapshot file carries `t`, the unix time of its snapshot (alerts.json and desk.json are running records; history.json's `t` is the list of its sample times). Amounts in USD unless a field name says otherwise.
 
-- [summary.json](https://cantonvenues.com/api/v1/summary.json): Canton Coin price, ecosystem figures, how many tokens and venues are priced, and the pools marked not trading
+- [summary.json](https://cantonvenues.com/api/v1/summary.json): Canton Coin price and its 24h volume on each DEX (cc_24h), Cantex's own 24h platform figures (cantex_24h), ecosystem figures, how many tokens and venues are priced, and the pools marked not trading
 - [tokens.json](https://cantonvenues.com/api/v1/tokens.json): every token: price, liquidity, 24h volume, 24h change (none for a token that traded under $1K in 24h), 7d change, the venues it trades on, 7-day hourly sparkline
 - [execution.json](https://cantonvenues.com/api/v1/execution.json): best execution: every venue quoted at $100, $1K, $10K and $50K, both directions, each by its best route on its own markets (one swap or two), net of each venue's network fee (`network_fee` documents the fee per venue and whether it was measured or assumed); `market_mid` is the market price sizes are converted at, `not_trading` names pools left out
 - [premium.json](https://cantonvenues.com/api/v1/premium.json): each asset's Canton price against its outside reference (CoinGecko; gold and silver spot from Ekiden's index while the spot market trades) or its $1 peg, overall and per venue; a token that traded under $1K in 24h shows no figure
