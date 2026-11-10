@@ -57,7 +57,8 @@ def test_a_gap_is_asked_again_and_a_gap_that_holds_is_told():
     assert not any(r["ok"] for r in rows) and rows[0]["gap_bp"] == pytest.approx(5.0, abs=0.01)
     rec = qc.summarise(rows, {}, {}, 1)
     text = _told(rec, rec)[1]
-    assert "tradecraft: 6 of 6 trades off the venue's own quote, largest 5.0 bp" in text
+    assert "tradecraft: 6 of 6 trades off the venue's own quote 2 checks in a row, largest 5.0 bp" in text
+    assert text.endswith("open a Canton session so it gets looked at.")
 
 
 def test_a_pool_that_moved_between_the_reads_is_not_a_gap():
@@ -234,11 +235,26 @@ def test_one_failed_check_is_not_told_and_two_in_a_row_are_told_once():
     ok, gap, down = _record(cantex="ok"), _record(cantex="gap"), _record(cantex="down")
     # 16.10 06:20 and 08:20 UTC: one gap, then a pass: nothing
     assert _told(ok, gap, ok) == [None, None, None]
-    # a gap, then a 429: told on the second, once, then once when it agrees again
-    sent = _told(gap, down, down, ok, ok)
-    assert sent[0] is None and sent[2] is None and sent[4] is None
-    assert "cantex: not checked (VenueRequestError: API error 429); 2 checks in a row" in sent[1]
-    assert "cantex: agrees again, 72 of 72 trades" in sent[3]
+    # a venue that does not answer twice: told on the second, once, then once when it agrees again
+    sent = _told(gap, down, down, down, ok, ok)
+    assert sent[0] is None and sent[1] is None and sent[3] is None and sent[5] is None
+    assert "cantex: not checked (VenueRequestError: API error 429); 2 checks in a row" in sent[2]
+    assert sent[4] == "<b>cantonvenues.com quote check</b>\ncantex: agrees again, 72 of 72 trades"
+
+
+def test_a_different_trade_off_on_each_check_is_not_told_and_the_same_trade_twice_is():
+    """3-10 Nov 2026: Cantex had one or two of 72 trades off on 14 of 168 checks (CC->cETH $100 at
+    3.3 bp on 9 Nov 15:20 UTC, HANDL->CC $1,000 at 5.4 bp on 10 Nov 12:20), a different trade each time;
+    each pair of such checks was told, and "agrees again" an hour later."""
+    def rec(*off):
+        rows = [{"venue": "cantex", "trade": t, "size_usd": 100, "gap_bp": 3.3 if t in off else 0.0,
+                 "ok": t not in off} for t in ("CC->cETH", "HANDL->CC", "CC->CBTC")]
+        return qc.summarise(rows, {}, {}, 1)
+    assert _told(rec("CC->cETH"), rec("HANDL->CC"), rec("CC->CBTC"), rec()) == [None] * 4
+    sent = _told(rec("CC->cETH"), rec("CC->cETH", "HANDL->CC"), rec("CC->cETH"), rec("HANDL->CC"), rec())
+    assert "cantex: 1 of 3 trades off the venue's own quote 2 checks in a row, largest 3.3 bp (CC-&gt;cETH $100)" in sent[1]
+    # told once; a gap on another trade does not close the incident, a clean check does
+    assert sent[2] is None and sent[3] is None and "agrees again, 3 of 3" in sent[4]
 
 
 def test_a_large_gap_on_one_check_is_not_told_and_unchecked_by_setup_never_counts():

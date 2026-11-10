@@ -20,8 +20,8 @@ twice on 15-16.10, Tradecraft answered 503 once). Written: ``api/v1/quotecheck.j
 what was checked, every gap) and the fees for the collector.
 
 Telegram to the owner (the pair contact.py and crosscheck.py use), once per incident: a venue failing
-``REPEATS`` checks in a row, and once more when it agrees again (``<state>/quotecheck_alerts.json``
-keeps the count). A single failed check is in the public record and the channel's gate, not in a
+``REPEATS`` checks in a row (the same trade off, or the venue not answering), and once more when it
+agrees again (``<state>/quotecheck_alerts.json`` keeps the count). A single failed check is in the public record and the channel's gate, not in a
 message: of 19 checks from 15.10 14:20 to 16.10 08:20 UTC, five failed, each told hourly: two Cantex
 429s and a Tradecraft 503 (what the second ask is for) and two Cantex gaps of 1.2 and 1.7 bp on 2 of
 72 trades. Size alone is no sign: on 16.10 08:49 cETH->CC $100 was 31.6 bp off and agreed to the
@@ -260,27 +260,47 @@ def _failure(v: str, s: dict, rows: list[dict]) -> str | None:
     return None
 
 
+def _trade(r: dict) -> str:
+    return f"{r['venue']}|{r['trade']}|{r['size_usd']}"
+
+
 def alerts(record: dict, prev: dict) -> tuple[str | None, dict]:
     """The owner's message for this check (None: nothing to tell) and the count for the next one.
-    ``prev`` is the last check's: {"streak": {venue: failed checks in a row}, "told": [venue, ...]}.
-    A venue is told once per incident, when it fails ``REPEATS`` checks in a row, and once more when
-    it agrees again."""
+    ``prev`` is the last check's: {"streak": {venue: checks in a row it did not answer}, "trades":
+    {"venue|trade|size": checks in a row that trade was off}, "told": [venue, ...]}.
+    A venue is told once per incident: when it does not answer ``REPEATS`` checks in a row, or when the
+    SAME trade is off its quote ``REPEATS`` checks in a row; and once more when it agrees again.
+    Until 2026-11-10 any gap on two checks in a row was told: over 3-10 Nov Cantex had one or two of 72
+    trades off on 14 of 168 checks, a different trade each time and gone by the next check, and the
+    owner got "off" and "agrees again" pairs with nothing to do about them."""
     streak, told = dict(prev.get("streak") or {}), set(prev.get("told") or [])
+    before = prev.get("trades") or {}
+    trades = {_trade(r): before.get(_trade(r), 0) + 1 for r in record["rows"] if not r["ok"]}
     lines = []
     for v, s in record["venues"].items():
         if v in UNCHECKED:
             continue
-        fail = _failure(v, s, record["rows"])
-        streak[v] = streak.get(v, 0) + 1 if fail else 0
-        if fail and v not in told and streak[v] >= REPEATS:
-            lines.append(f"{fail}; {streak[v]} checks in a row")
+        down = _failure(v, s, record["rows"]) if s.get("status") == "not checked" else None
+        streak[v] = streak.get(v, 0) + 1 if down else 0
+        held = [r for r in record["rows"] if r["venue"] == v and not r["ok"] and trades[_trade(r)] >= REPEATS]
+        if v not in told and down and streak[v] >= REPEATS:
+            lines.append(f"{down}; {streak[v]} checks in a row")
             told.add(v)
-        elif not fail and v in told:
+        elif v not in told and held:
+            worst = max(abs(r["gap_bp"]) for r in held if r["gap_bp"] is not None) if any(
+                r["gap_bp"] is not None for r in held) else 0.0
+            lines.append(f"{v}: {len(held)} of {s['checked']} trades off the venue's own quote {REPEATS} checks "
+                         f"in a row, largest {worst:.1f} bp ("
+                         + html.escape(", ".join(f"{r['trade']} ${r['size_usd']:,}" for r in held[:4])) + ")")
+            told.add(v)
+        elif v in told and s.get("status") == "ok":
             told.discard(v)
-            if s.get("status") == "ok":
-                lines.append(f"{v}: agrees again, {s['agree']} of {s['checked']} trades")
+            lines.append(f"{v}: agrees again, {s['agree']} of {s['checked']} trades")
     text = "<b>cantonvenues.com quote check</b>\n" + "\n".join(lines) if lines else None
-    return text, {"streak": streak, "told": sorted(told)}
+    if text and any("agrees again" not in line for line in lines):
+        text += ("\nOur pool math and the venue's quote engine disagree: a price on the site may be off. "
+                 "What to do: open a Canton session so it gets looked at.")
+    return text, {"streak": streak, "trades": trades, "told": sorted(told)}
 
 
 async def _twice(venue: str, ask):

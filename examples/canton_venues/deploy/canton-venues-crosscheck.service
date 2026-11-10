@@ -1,5 +1,5 @@
 [Unit]
-Description=Canton Venues cross-check: card figures against venue APIs and DefiLlama, one Telegram message only when they disagree
+Description=Canton Venues cross-check: card figures against venue APIs and DefiLlama, one Telegram message when they disagree, one the first day a source is silent
 After=network-online.target
 Wants=network-online.target
 
@@ -9,7 +9,7 @@ WorkingDirectory=/opt/canton-venues/current/examples/canton_venues
 Environment=PYTHONUNBUFFERED=1
 # TELEGRAM_BOT_TOKEN and CONTACT_CHAT_ID (the owner's chat with @cantonvenuesbot), as contact.py (chmod 600)
 EnvironmentFile=-/opt/canton-venues/.env
-ExecStart=/opt/canton-venues/.venv/bin/python crosscheck.py --published /var/www/canton-venues/venues/published.json --weekly /var/www/canton-venues/api/v1/weekly.json
+ExecStart=/opt/canton-venues/.venv/bin/python crosscheck.py --published /var/www/canton-venues/venues/published.json --weekly /var/www/canton-venues/api/v1/weekly.json --summary /var/www/canton-venues/api/v1/summary.json --state /var/www/canton-venues-state/crosscheck.json
 TimeoutStartSec=600
 MemoryMax=100M
 CPUQuota=10%

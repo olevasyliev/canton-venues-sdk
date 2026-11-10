@@ -22,6 +22,15 @@ CC price or tokens; a trouble that clears while others stay sends nothing, and "
 a second clear run. Since 2026-10-30: a Temple market that traded in 24h with no book of it read
 (``temple_unread``), so a new listing is told the day it trades, not found by hand 11 days later.
 
+Since 2026-11-10 the owner is told only what he can act on. Eleven days of Pool Party's API being out
+(30 Oct to 10 Nov) sent him a reminder every six hours with nothing to do about it. Now a trouble the
+site runs without (another priced venue out, an outside source old: ``MINOR``) is told once, after it
+has lasted ``MINOR_S`` (a day), and never reminded; a Temple market we do not read is told once, at
+once. Reminders are for what visitors see broken: the site not refreshing, a core venue out, Temple's
+books unread, failing ticks, an empty snapshot. Every message ends with what to do. All of it, minor
+or not and from the first half hour, is in summary.json, which the maintainer's session-start report
+reads.
+
 The bot and chat are the pair contact.py and crosscheck.py use (TELEGRAM_BOT_TOKEN, CONTACT_CHAT_ID
 from the server's .env). What was last sent lives in ``--state`` (off the web root), so a restart
 never repeats an alert. Written after the 13–14 Oct outage: a new empty Cantex pool failed every
@@ -49,6 +58,11 @@ log = logging.getLogger("watchdog")
 URL = "https://cantonvenues.com/api/v1/summary.json"
 STALE_S = 30 * 60      # six missed five-minute ticks
 REMIND_S = 6 * 3600    # while still stale, one reminder per six hours
+MINOR_S = 24 * 3600    # a trouble the site runs without is told once it has lasted this long
+MINOR = ("venue:", "source:", "unread:")  # trouble keys the site runs without: told once, no reminders
+ACT = "\nVisitors see this. What to do: open a Canton session so it gets looked at."
+NO_ACT = ("\nNothing for you to do: the site runs without it. No reminders, one message when it is back; "
+          "it is on the next Canton session's start report.")
 # an outside source read longer ago than this is a trouble (summary.json ``sources``: last good read)
 SOURCE_MAX_AGE_S = {"gecko": 30 * 60, "candles": 3600, "tc_volume": 3600, "temple_volume": 3600,
                     "llama": 6 * 3600, "temple_cc_book": 30 * 60}
@@ -146,6 +160,9 @@ def check(summary: dict | None, state: dict, now: datetime,
     # a tick that failed on this run and the last one is a trouble even on a fresh snapshot
     erring = fresh and (summary or {}).get("status") == "error"
     down = troubles(summary or {}, now_s, bool(state.get("error_seen"))) if fresh else {}
+    # a trouble the site runs without waits a day before it is told (a new Temple market: told at once)
+    down = {k: v for k, v in down.items()
+            if not k.startswith(MINOR) or k.startswith("unread:") or now_s - v[0] > MINOR_S}
     seen = {"error_seen": now_s} if erring else {}
     if fresh and not down:
         if not state.get("alerted"):
@@ -173,7 +190,8 @@ def check(summary: dict | None, state: dict, now: datetime,
     # now. One that clears while others stay is not a message (it re-announced the rest as new).
     prev = state.get("venues", []) if state.get("kind", "stale") == kind else None
     same = prev is not None and set(down) <= set(prev)
-    if alerted and same and now_s - alerted < REMIND_S:
+    minor = fresh and all(k.startswith(MINOR) for k in down)
+    if alerted and same and (minor or now_s - alerted < REMIND_S):
         return None, ({k: v for k, v in state.items() if k != "clear_seen"} | {"venues": list(down)}
                       if fresh else state)
     still = "still " if alerted and same else ""
@@ -182,7 +200,7 @@ def check(summary: dict | None, state: dict, now: datetime,
         head = ("is {still}missing a venue" if venue else "is {still}failing a tick" if "error" in down
                 else "is {still}short of data").format(still=still)
         lines = [f"<b>cantonvenues.com {head}</b>"] + [line for _, line in down.values()]
-        return "\n".join(lines), {"alerted": now_s, "kind": "venues", "venues": list(down),
+        return "\n".join(lines) + (NO_ACT if minor else ACT), {"alerted": now_s, "kind": "venues", "venues": list(down),
                                   "since": min(since for since, _ in down.values()), **seen}
     last = t if t is not None else state.get("last_t")
     lines = [f"<b>cantonvenues.com {'still not' if still else 'is not'} refreshing</b>"]
@@ -193,7 +211,7 @@ def check(summary: dict | None, state: dict, now: datetime,
     if summary and summary.get("status") == "error" and summary.get("error"):
         at = f" at {_when(summary['error_t'])}" if summary.get("error_t") else ""
         lines.append(f"Collector error{at}: {html.escape(str(summary['error'])[:300])}")
-    return "\n".join(lines), {"alerted": now_s, "kind": "stale", "last_t": last}
+    return "\n".join(lines) + ACT, {"alerted": now_s, "kind": "stale", "last_t": last}
 
 
 def run(state_path: Path, now: datetime | None = None,

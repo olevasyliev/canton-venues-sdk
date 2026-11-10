@@ -172,7 +172,7 @@ def test_watchdog_tells_a_missing_cc_book_flaky_ticks_and_an_empty_snapshot():
 
 def test_watchdog_says_nothing_when_one_of_two_troubles_clears():
     two = _summary(down_since={"cantex": NOW.timestamp() - 45 * 60},
-                   sources={"gecko": NOW.timestamp() - 45 * 60})
+                   sources={"gecko": NOW.timestamp() - 25 * 3600})  # a source is told once a day old
     text, state = wd.check(two, {}, NOW)
     assert text and set(state["venues"]) == {"cantex", "source:gecko"}
     later = NOW + timedelta(minutes=10)

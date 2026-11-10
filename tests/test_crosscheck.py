@@ -84,7 +84,8 @@ def test_silent_when_every_figure_agrees():
 def test_one_message_when_a_direct_figure_is_off_by_more_than_the_limit(monkeypatch):
     # Pool Party really holds 5 CC pools worth $169K; a card still showing $115K is 32% short
     text, _ = cx.run(published(pool_party={"tvl": 115_000.0}), fake_get(pp_res=169_000 / CC / 2), NOW)
-    assert text.count("\n") == 1 and "pool-party tvl: card $115.0K" in text and "limit 15%" in text
+    assert text.count("\n") == 2 and "pool-party tvl: card $115.0K" in text and "limit 15%" in text
+    assert text.endswith("open a Canton session so it gets looked at.")
     sent = []
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t0k3n")
     monkeypatch.setenv("CONTACT_CHAT_ID", "42")
@@ -139,6 +140,9 @@ def test_defillama_gaps_use_their_own_looser_limit():
     # 60% under: past LLAMA_GAP, reported
     text, _ = cx.run(published(), fake_get(llama_rocky=7e6), NOW)
     assert "rocky spot_volume" in text and "DefiLlama Canton DEX volume" in text and "limit 35%" in text
+    # DefiLlama undercounts Rocky ($36 against our $219K on 10 Nov 2026): a card above it is not a fault
+    quiet, rows = cx.run(published(), fake_get(llama_rocky=36.0), NOW)
+    assert quiet is None and any(r.get("floor") for r in rows)
 
 
 def test_a_defillama_gap_on_a_figure_the_venues_own_api_confirms_is_not_told():
@@ -165,7 +169,31 @@ def test_a_failed_source_is_not_a_zero_and_stale_cards_are_reported():
     one = published()
     next(iter(one["venues"].values()))["t"] -= 3 * 3600  # one card held, the others fresh: still told
     assert "card not republished for 3.2 h" in cx.run(one, fake_get(), NOW)[0]
-    assert cx.run({}, fake_get(), NOW)[0].endswith("is empty).")
+    assert "is empty).\n" in cx.run({}, fake_get(), NOW)[0]
+
+
+def test_a_silent_source_is_told_once_and_a_venue_the_collector_reports_down_is_left_to_the_watchdog():
+    """30 Oct to 10 Nov 2026: Pool Party's API was out, the watchdog said so, and this check added
+    "pool-party card not republished" and "Not checked: poolparty" every morning for eleven days."""
+    held = published()
+    held["venues"]["pool-party"]["t"] -= 300 * 3600
+    get = fake_get(fail=("pool-party",))
+    text, _ = cx.run(held, get, NOW)
+    assert "pool-party card not republished for 300.2 h" in text and "source did not answer): poolparty" in text
+    # the collector's summary names it as not read: nothing from here
+    assert cx.run(held, get, NOW, down=frozenset({"poolparty"}))[0] is None
+    # read again but its API still silent here: told the first day, with nothing to do, then not again
+    state: dict = {}
+    first, _ = cx.run(published(), get, NOW, state=state)
+    assert "sources did not answer" in first and "Nothing for you to do" in first and state == {"failed": ["poolparty"]}
+    assert cx.run(published(), get, NOW, state=state)[0] is None
+    # another source going silent is new; one that answers again and fails later is told again
+    assert "source did not answer): ekiden" in cx.run(published(), fake_get(fail=("pool-party", "ekiden")), NOW, state=state)[0]
+    assert cx.run(published(), fake_get(), NOW, state=state)[0] is None and state == {"failed": []}
+    assert "poolparty" in cx.run(published(), get, NOW, state=state)[0]
+    # a figure that disagrees is told every day it holds, whatever was told before
+    off = published(pool_party={"tvl": 115_000.0})
+    assert all("pool-party tvl" in cx.run(off, fake_get(pp_res=169_000 / CC / 2), NOW, state=state)[0] for _ in range(2))
 
 
 def test_no_secret_in_the_code_and_nothing_sent_without_one(monkeypatch):

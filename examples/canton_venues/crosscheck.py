@@ -19,6 +19,13 @@ ONE Telegram message goes from the site's bot (TELEGRAM_BOT_TOKEN, @cantonvenues
 owner's chat (CONTACT_CHAT_ID), both from the server's .env, the same pair contact.py uses. When
 everything agrees, nothing is sent. A source that fails to answer is reported as n/a, never as 0.
 
+Since 2026-11-10 (the owner got the same two Pool Party lines every morning for eleven days, with
+nothing to do about them): a source that does not answer is told once, not again each day it stays
+silent (``--state`` keeps which were told); and a venue the collector itself reports as not read
+(``--summary``: ``down_since``, ``optional_down``) is the watchdog's to tell, so its held card and its
+silent API are left out here. A figure that disagrees is still told every day it holds: that is a
+wrong number in public. Every message ends with what to do.
+
     python crosscheck.py --published /var/www/canton-venues/venues/published.json
     python crosscheck.py --published ... --dry-run      # print, send nothing
 """
@@ -59,6 +66,10 @@ LLAMA_NAMES = {"temple": "Temple", "cantex": "Cantex", "rocky": "Rocky Exchange 
 # DefiLlama TVL is comparable to our pool liquidity only where the protocol is CC pools and nothing
 # else: Cantex. Pool Party's DefiLlama TVL also counts its non-CC pools; Temple's is not on a card.
 LLAMA_TVL = ("cantex",)
+# Venues DefiLlama undercounts: its figure is a floor, so only a card BELOW it is a fault. Rocky: on
+# 4-7 Nov 2026 it read $1, $1.4K, $371 and $5 a day against our ~$220K from Rocky's own candles (and
+# $36 on 10 Nov), and each of those mornings the owner was told the figures disagree
+LLAMA_FLOOR = ("rocky",)
 
 Get = Callable[[str, dict | None], object]
 
@@ -294,10 +305,18 @@ def _usd(v: float) -> str:
     return (f"${v / 1e6:.2f}M" if a >= 1e6 else f"${v / 1e3:.1f}K" if a >= 1e3 else f"${v:.0f}")
 
 
+def _id(name: str) -> str:
+    """A card slug or a source name as the collector's venue id ("pool-party", "poolparty (no ...)")."""
+    return name.split(" ")[0].replace("-", "")
+
+
 def run(published: dict, get: Get = http_get, now: datetime | None = None,
-        weekly: dict | None = None) -> tuple[str | None, list[dict]]:
+        weekly: dict | None = None, down: frozenset[str] = frozenset(),
+        state: dict | None = None) -> tuple[str | None, list[dict]]:
     """The message to send (None when all is fine) and every comparison made. ``weekly`` is
-    weekly.json: {} when the file is missing, None to skip the weekly check."""
+    weekly.json: {} when the file is missing, None to skip the weekly check. ``down``: venue ids the
+    collector reports as not read (the watchdog tells those). ``state``: {"failed": sources told as
+    not answering}, updated here; without it every silent source is told on every run."""
     now = now or datetime.now(UTC)
     direct, llama = venue_figures(get, now), llama_figures(get)
     own = compare(published, direct, GAP)
@@ -312,6 +331,10 @@ def run(published: dict, get: Get = http_get, now: datetime | None = None,
         pub = weekly_published(weekly)
         rows += compare(pub, {k: v for k, v in wk.items() if "DefiLlama" not in v[1]}, GAP)
         rows += compare(pub, {k: v for k, v in wk.items() if "DefiLlama" in v[1]}, LLAMA_GAP)
+    for r in rows:
+        if (r["over"] and r["gap"] > 0 and "DefiLlama" in r["source"]
+                and (r["venue"] in LLAMA_FLOOR or r["figure"].rpartition(":")[2] in LLAMA_FLOOR)):
+            r["over"], r["floor"] = False, True
     failed = sorted({src for (k, _), (_, src) in {**direct, **llama, **wk}.items() if k == "_failed"})
     lines = []
     if weekly is not None and not weekly.get("end"):
@@ -323,20 +346,28 @@ def run(published: dict, get: Get = http_get, now: datetime | None = None,
         lines.append("No card figures published at all (venues/published.json is empty).")
     # venue by venue: one card held for days used to pass while any other card was fresh (max, not min)
     for slug, t in sorted(ts.items()):
-        if now.timestamp() - t > STALE_CARDS_S:
+        if now.timestamp() - t > STALE_CARDS_S and _id(slug) not in down:
             lines.append(f"{html.escape(slug)} card not republished for {(now.timestamp() - t) / 3600:.1f} h.")
     for r in rows:
         if r["over"]:
             lines.append(f"{html.escape(r['venue'])} {r['figure']}: card {_usd(r['ours'])}, "
                          f"{html.escape(r['source'])} {_usd(r['theirs'])} ({r['gap'] * 100:+.0f}%, "
                          f"limit {r['limit'] * 100:.0f}%)")
-    if not lines and not failed:
+    failed = [f for f in failed if _id(f) not in down]
+    # a source that did not answer is told even when nothing disagrees (a silent cross-check is not a
+    # pass), but once: not again on each run it stays silent
+    new = failed if state is None else [f for f in failed if f not in state.get("failed", [])]
+    if state is not None:
+        state["failed"] = failed
+    if not lines and not new:
         return None, rows
-    # a source that did not answer is told even when nothing disagrees: a silent cross-check is not a pass
     head = "figures disagree" if lines else "sources did not answer"
     text = f"<b>cantonvenues.com cross-check: {head}</b>\n" + "\n".join(lines)
-    if failed:
-        text += ("\n" if lines else "") + "Not checked (source did not answer): " + html.escape(", ".join(failed))
+    if new:
+        text += ("\n" if lines else "") + "Not checked (source did not answer): " + html.escape(", ".join(new))
+    text += ("\nA card may show a wrong or old figure. What to do: open a Canton session so it gets looked at."
+             if lines else "\nNothing for you to do: told once, not repeated while it stays silent; "
+                           "it is on the next Canton session's start report.")
     return text, rows
 
 
@@ -361,30 +392,42 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--published", type=Path, required=True, help="venues/published.json from the collector")
     ap.add_argument("--weekly", type=Path, help="api/v1/weekly.json from weekly.py: check the weekly card too")
+    ap.add_argument("--summary", type=Path, help="api/v1/summary.json: venues it reports as not read are left out")
+    ap.add_argument("--state", type=Path, help="which silent sources were already told, kept between runs")
     ap.add_argument("--dry-run", action="store_true", help="print the comparison, send nothing")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    try:
-        published = json.loads(args.published.read_text())
-    except (OSError, ValueError):
-        published = {}
+
+    def read(path: Path | None) -> dict:
+        try:
+            return json.loads(path.read_text()) if path else {}
+        except (OSError, ValueError):
+            return {}
+    published, summary, state = read(args.published), read(args.summary), read(args.state)
+    down = frozenset(_id(v) for k in ("down_since", "optional_down") for v in (summary.get(k) or {}))
     weekly = None
     if args.weekly:
         try:
             weekly = json.loads(args.weekly.read_text())
         except (OSError, ValueError):
             weekly = {}
-    text, rows = run(published, weekly=weekly)
+    text, rows = run(published, weekly=weekly, down=down, state=state if args.state else None)
     for r in rows:
         log.info("%-10s %-12s ours %12s  %-34s %12s  %+6.1f%%%s", r["venue"], r["figure"], _usd(r["ours"]),
                  r["source"], _usd(r["theirs"]), r["gap"] * 100,
-                 "  OVER" if r["over"] else "  over, the venue's own API agrees" if r.get("outranked") else "")
+                 "  OVER" if r["over"] else "  over, the venue's own API agrees" if r.get("outranked")
+                 else "  above DefiLlama, which undercounts this venue" if r.get("floor") else "")
     if text is None:
         log.info("all %d figures within limits; nothing sent", len(rows))
     elif args.dry_run:
         print(text)
-    else:
-        send(text)
+        return
+    elif not send(text):
+        return  # not delivered: the state stays, so the next run tells it
+    if args.state and not args.dry_run:
+        tmp = args.state.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state))
+        tmp.replace(args.state)
 
 
 if __name__ == "__main__":

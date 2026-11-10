@@ -225,6 +225,11 @@ def test_watchdog_tells_a_venue_temple_and_a_stale_source():
     old = NOW.timestamp() - 3600
     s = _summary(optional_down={"rocky": old}, temple_priced=False, sources={"temple_book": old, "gecko": old})
     text, state = wd.check(s, {}, NOW)
+    # since 2026-11-10 what the site runs without (Rocky, CoinGecko) is told only after a day
+    assert "Temple's order books are not read" in text and "Rocky" not in text and "CoinGecko" not in text
+    day = NOW.timestamp() - 25 * 3600
+    s = _summary(optional_down={"rocky": day}, temple_priced=False, sources={"temple_book": old, "gecko": day})
+    text, state = wd.check(s, {}, NOW)
     assert "Rocky has not been read since" in text and "Temple's order books are not read" in text
     assert "CoinGecko prices last read" in text and state["kind"] == "venues"
 
