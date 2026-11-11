@@ -135,10 +135,11 @@ def weekly_post(w: dict | None, now: datetime) -> Post | None:
 
 # === Tuesday, Thursday: one venue ==========================================
 
-def venue_post(published: dict, turn: int, card_v: dict[str, int],
-               checked: set[str] | None = None) -> tuple[Post | None, int]:
+def pick_venue(published: dict, turn: int, card_v: dict[str, int],
+               checked: set[str] | None = None) -> tuple[dict | None, int]:
     """The next venue, in the site's order, that has a published headline and card, and the turn after
-    it; a card whose headline is a price claim only for a venue whose prices are checked."""
+    it; a card whose headline is a price claim only for a venue whose prices are checked. The venue as
+    ``{"slug", "name", "head", "photo"}``, or None with the turn unchanged."""
     order = [v["slug"] for v in VENUES]
     heads = (published or {}).get("venues") or {}
     for i in range(len(order)):
@@ -148,11 +149,21 @@ def venue_post(published: dict, turn: int, card_v: dict[str, int],
                                               and slug.replace("-", "") not in (checked or set())):
             continue
         name = next(v["name"] for v in VENUES if v["slug"] == slug)
-        html = "\n".join([f"🏛 <b>{name}</b>: {head['title']}", head["sub"], "",
-                          f'🔗 <a href="{SITE}/venues/{slug}/">{name} on Canton Venues</a>'])
-        return (Post("venue", html, f"{SITE}/venues/{slug}/card.png?v={card_v[slug]}"),
-                (turn + i + 1) % len(order))
+        return ({"slug": slug, "name": name, "head": head,
+                 "photo": f"{SITE}/venues/{slug}/card.png?v={card_v[slug]}"}, (turn + i + 1) % len(order))
     return None, turn
+
+
+def venue_post(published: dict, turn: int, card_v: dict[str, int],
+               checked: set[str] | None = None) -> tuple[Post | None, int]:
+    """The next venue's card and headline (``pick_venue``), and the turn after it."""
+    v, turn = pick_venue(published, turn, card_v, checked)
+    if v is None:
+        return None, turn
+    name, slug, head = v["name"], v["slug"], v["head"]
+    html = "\n".join([f"🏛 <b>{name}</b>: {head['title']}", head["sub"], "",
+                      f'🔗 <a href="{SITE}/venues/{slug}/">{name} on Canton Venues</a>'])
+    return Post("venue", html, v["photo"]), turn
 
 
 # === Wednesday: best execution over the week ===============================
@@ -171,9 +182,11 @@ def read_exec(directory: Path, now: int) -> list[dict]:
     return sorted(out, key=lambda s: s["t"])
 
 
-def execution_post(samples: list[dict], checked: set[str] | None = None) -> Post | None:
+def execution_stats(samples: list[dict], checked: set[str] | None = None) -> dict | None:
     """For a CC order at each size: which venue returned the most, net of network fees, how often.
-    Samples from ``EXEC_SINCE`` on; with ``checked``, a sample a venue outside it won is not counted."""
+    Samples from ``EXEC_SINCE`` on; with ``checked``, a sample a venue outside it won is not counted.
+    ``{"span", "rows": [(size, [(venue, percent), ...], median edge in %)], "assumed": [names],
+    "fee": the assumed fee or None}``; None with too little history."""
     samples = [s for s in samples if s["t"] >= EXEC_SINCE]
     if len(samples) < MIN_EXEC_HOURS:
         return None
@@ -186,44 +199,60 @@ def execution_post(samples: list[dict], checked: set[str] | None = None) -> Post
                 edges[size].append(edge_net)
     if not wins:
         return None
-    span = _span(samples[-1]["t"] - samples[0]["t"])
+    rows = []
+    for size in EXEC_SIZES:
+        c = wins.get(size)
+        if c:
+            n = sum(c.values())
+            rows.append((size, [(v, k * 100 // n) for v, k in c.most_common()],
+                         statistics.median(edges[size]) / 100))
     # the venues compared on the pair whose network fee is assumed, named in the closing line
     fees = samples[-1].get("network_fee") or {}
     compared = {v for s in samples for v in (s.get("venues") or {}).get(EXEC_PAIR, [])}
     assumed = sorted(NAMES.get(v, v) for v, f in fees.items()
                      if f.get("basis") == "assumed" and (v in compared or not compared))
-    lines = [f"🏁 <b>Where a CC trade got the best price</b>, {span}", ""]
-    for size in EXEC_SIZES:
-        c = wins.get(size)
-        if not c:
-            continue
-        n = sum(c.values())
-        ranked = c.most_common()
-        top, k = ranked[0]
-        line = f"<b>{money(size)}</b>: {NAMES.get(top, top)} {k * 100 // n}% of the time"
+    return {"span": _span(samples[-1]["t"] - samples[0]["t"]), "rows": rows, "assumed": assumed,
+            "fee": next((f for f in fees.values() if f.get("basis") == "assumed"), None) if assumed else None}
+
+
+def assumed_fee_note(st: dict) -> str:
+    """"; Rocky publishes no network fee, so its fee is assumed at 1.5 CC", or "" when none is assumed."""
+    assumed, each = st["assumed"], st["fee"]
+    if not assumed:
+        return ""
+    n = (", ".join(assumed[:-1]) + " and " + assumed[-1]) if len(assumed) > 1 else assumed[0]
+    verb, own = ("publish", "theirs") if len(assumed) > 1 else ("publishes", "its fee")
+    return f"; {n} {verb} no network fee, so {own} is assumed at {each['point']:g} {each['unit'].upper()}"
+
+
+def execution_post(samples: list[dict], checked: set[str] | None = None) -> Post | None:
+    """The week's best execution (``execution_stats``) for the channel."""
+    st = execution_stats(samples, checked)
+    if st is None:
+        return None
+    lines = [f"🏁 <b>Where a CC trade got the best price</b>, {st['span']}", ""]
+    for size, ranked, edge in st["rows"]:
+        top, pct = ranked[0]
+        line = f"<b>{money(size)}</b>: {NAMES.get(top, top)} {pct}% of the time"
         if len(ranked) > 1:
-            line += ", " + ", ".join(f"{NAMES.get(v, v)} {x * 100 // n}%" for v, x in ranked[1:3])
-        line += f". The next venue returned a median {statistics.median(edges[size]) / 100:.2f}% less"
+            line += ", " + ", ".join(f"{NAMES.get(v, v)} {x}%" for v, x in ranked[1:3])
+        line += f". The next venue returned a median {edge:.2f}% less"
         lines.append(line)
     note = ("Buys and sells of CC for USDCx, checked every hour. Pool fees, price impact and each venue's "
-            "network fee included")
-    if assumed:
-        n = (", ".join(assumed[:-1]) + " and " + assumed[-1]) if len(assumed) > 1 else assumed[0]
-        each = next(f for f in fees.values() if f.get("basis") == "assumed")
-        verb, own = ("publish", "theirs") if len(assumed) > 1 else ("publishes", "its fee")
-        note += (f"; {n} {verb} no network fee, so {own} is assumed at {each['point']:g} "
-                 f"{each['unit'].upper()}")
+            "network fee included") + assumed_fee_note(st)
     lines += ["", note + ".", f'🔗 <a href="{SITE}/#execution">Live best execution</a>']
     return Post("execution", "\n".join(lines))
 
 
 # === Friday: pegs and premiums over the week ===============================
 
-def pegs_post(history: dict, tokens: list[dict], symbols: dict[str, str], now: int) -> Post | None:
+def pegs_stats(history: dict, tokens: list[dict], symbols: dict[str, str], now: int) -> dict | None:
     """Stablecoins: share of the week within 0.5% of $1 and the worst reading. Reference assets: the
     median premium to their outside price. Only tokens with ``MIN_LIQUIDITY_USD`` in pools today that
     traded $1K or more in the last 24h (a pool that barely trades only retells CC's moves). A premium is read
-    only from its last method step on (history "steps"), and the line says since when."""
+    only from its last method step on (history "steps"), and the line says since when.
+    ``{"span", "stable": [(share inside, name, furthest held, its time)] best first,
+    "ref": [(name, label, median premium)] furthest first}``; None with nothing to say."""
     ts = history.get("t") or []
     lo = next((i for i, t in enumerate(ts) if t >= now - WEEK_S), None)
     if lo is None or not ts or ts[-1] - ts[lo] < 3 * 86400:
@@ -253,16 +282,24 @@ def pegs_post(history: dict, tokens: list[dict], symbols: dict[str, str], now: i
             ref.append((name, label, statistics.median(v for _, v in pts)))
     if not stable and not ref:
         return None
-    lines = [f"💵 <b>Stablecoins on Canton</b>, {span}"]
-    for inside, name, worst, worst_t in sorted(stable, key=lambda x: (-x[0], x[1])):
+    return {"span": span, "stable": sorted(stable, key=lambda x: (-x[0], x[1])),
+            "ref": sorted(ref, key=lambda x: -abs(x[2]))}
+
+
+def pegs_post(history: dict, tokens: list[dict], symbols: dict[str, str], now: int) -> Post | None:
+    """The week's stablecoins and premiums (``pegs_stats``) for the channel."""
+    st = pegs_stats(history, tokens, symbols, now)
+    if st is None:
+        return None
+    lines = [f"💵 <b>Stablecoins on Canton</b>, {st['span']}"]
+    for inside, name, worst, worst_t in st["stable"]:
         line = f"{html.escape(name)}: within 0.5% of $1 {inside * 100:.0f}% of the time"  # Telegram HTML
         if abs(worst) > PEG_BAND:
             line += f", furthest {signed(worst, 2)} held 30 min ({_day(worst_t)})"
         lines.append(line)
-    if ref:
+    if st["ref"]:
         lines += ["", "🌍 <b>Against outside prices</b>, median"]
-        lines += [f"{html.escape(name)} {signed(p, 2)} vs {html.escape(label)}"
-                  for name, label, p in sorted(ref, key=lambda x: -abs(x[2]))]
+        lines += [f"{html.escape(name)} {signed(p, 2)} vs {html.escape(label)}" for name, label, p in st["ref"]]
     lines += ["", "Read every five minutes from Canton pools and order books.",
               f'🔗 <a href="{SITE}/#premium">Live premiums</a>']
     return Post("pegs", "\n".join(lines))

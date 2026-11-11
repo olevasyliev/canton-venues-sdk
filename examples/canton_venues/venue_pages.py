@@ -753,7 +753,10 @@ def _leads(f, i, perp_id, name_of, rows, llama, spot_vol, kind_vol, perp_vol, tv
                  else f"The largest {f['kind_label']} by volume")
         add("kind_volume", title, f"{short_money(f['spot_volume'])} traded in the last 24 hours", r,
             f["spot_volume"], scope=sc, cap="Traded in the last 24 hours")
-    if perp_id and (r := _lead(perp_vol, perp_id)):
+    # "the largest" only when every perps venue we read has a 24h figure: Canborsa publishes 30 days only
+    # ($25.0M on 11 Nov 2026, about $0.8M a day), so Rocky's $0.27M of 24h could not be called the largest
+    every_perp_24h = all(x.get("volume_24h_usd") is not None for x in rows.values() if x["kind"] == "Perpetuals")
+    if perp_id and every_perp_24h and (r := _lead(perp_vol, perp_id)):
         add("perp_volume", "The largest perps venue",
             f"{short_money(f['perp_volume'])} of perpetuals traded in the last 24 hours", r, f["perp_volume"],
             cap="Perpetuals traded in the last 24 hours")

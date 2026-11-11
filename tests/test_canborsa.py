@@ -194,6 +194,9 @@ def test_its_page_leads_with_its_own_30_days_and_never_says_none_trading():
     assert tiles["Perp markets"]["n"] == "3 we read" and "none trading" not in str(tiles)
     # no 24h figure is no $0 in anybody's ranking: the other perps venues rank as before
     assert f["rocky"]["perp_rank"] == 1 and f["rocky"]["perp_n"] == 2
+    # but nobody is "the largest perps venue" while one of them publishes only 30 days
+    assert all(x["rule"] != "perp_volume" for x in f["rocky"]["leads"])
+    assert any(x["rule"] == "perp_volume" for x in vp.facts(data())["rocky"]["leads"])
     assert any("30-day volume is its own figure" in x for x in cb["method"])
 
 

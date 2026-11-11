@@ -37,6 +37,7 @@ from pathlib import Path
 
 import alerts as al
 import channel
+import xpost
 import exec_history
 import exit_cost
 import httpx
@@ -1471,6 +1472,7 @@ class Collector:
         if not self.down:  # alerts and the channel's post of the day wait for a tick with every core venue
             await self._alerts(tokens, premium, scan, now)
             await self._morning(tokens)
+            await self._x_morning(tokens)
         # the tick's heartbeat, written last: a fresh ``t`` means every file above was written (the
         # watchdog reads it; a tick that failed earlier leaves the last one, then marks it an error)
         write_json(self.api / "summary.json", summary)
@@ -1552,23 +1554,59 @@ class Collector:
             return
         await self._telegram(post.html, post.photo)
 
-    async def _telegram(self, body: str, photo: str | None = None) -> None:
-        token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
-        if not (token and chat):
+    async def _x_morning(self, tokens) -> None:
+        """The X post of the day (xpost.py), sent to the founder's chat for him to post by hand."""
+        contact = os.getenv("CONTACT_CHAT_ID")
+        if not contact:  # never the channel: these are drafts for the founder
             return
+        path = self.state / "x.json"
+        state = load_json(path, {})
+        now = datetime.now(UTC)
+        if not xpost.due(state, now):
+            return
+        t = int(now.timestamp())
+        checked = channel.checked_venues(load_json(self.api / "quotecheck.json", None), t)
+        kind = xpost.SCHEDULE[now.weekday()]
+        post = None
+        try:
+            src = {"now": now, "weekly": load_json(self.api / "weekly.json", None),
+                   "published": load_json(self.out / "venues" / "published.json", {}),
+                   "card_v": {p.parent.name: int(p.stat().st_mtime) for p in (self.out / "venues").glob("*/card.png")},
+                   "samples": channel.read_exec(self.state / "exec", t), "history": self.history, "tokens": tokens}
+            post = xpost.build(kind, src, state, checked)
+        except Exception:  # noqa: BLE001
+            log.exception("x post %s", kind)
+        state["date"] = now.date().isoformat()
+        state["posts"] = (state.get("posts", []) + [{"t": t, "kind": kind, "sent": post.kind if post else None}])[-60:]
+        write_json(path, state)  # recorded before sending: a failed send is not retried into a duplicate
+        if post is None:
+            log.info("x post: nothing to post today (%s)", kind)
+            return
+        for body, photo in xpost.messages(post, now):
+            if not await self._telegram(body, photo, chat=contact, html=False):
+                break  # the rest would arrive without what comes before it
+
+    async def _telegram(self, body: str, photo: str | None = None, chat: str | None = None,
+                        html: bool = True) -> bool:
+        """Send to the channel (TELEGRAM_CHAT_ID), or to ``chat``; plain text when not ``html``."""
+        token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), chat or os.getenv("TELEGRAM_CHAT_ID")
+        if not (token and chat):
+            return False
+        fmt = {"parse_mode": "HTML"} if html else {}
         try:
             # the URL carries the bot token: never log it (httpx is at WARNING)
             if photo:  # Telegram fetches the image from our site; the text goes as its caption
                 resp = await self.http.post(f"https://api.telegram.org/bot{token}/sendPhoto", data={
-                    "chat_id": chat, "photo": photo, "caption": body, "parse_mode": "HTML"})
+                    "chat_id": chat, "photo": photo, "caption": body, **fmt})
             else:
                 resp = await self.http.post(f"https://api.telegram.org/bot{token}/sendMessage", data={
-                    "chat_id": chat, "text": body, "parse_mode": "HTML",
-                    "disable_web_page_preview": "true"})
+                    "chat_id": chat, "text": body, "disable_web_page_preview": "true", **fmt})
             if resp.status_code != 200:
                 log.warning("telegram: HTTP %s", resp.status_code)
+            return resp.status_code == 200
         except httpx.HTTPError as exc:
             log.warning("telegram: %s", type(exc).__name__)
+            return False
 
     # === sections ==========================================================
 
