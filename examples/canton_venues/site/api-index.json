@@ -81,7 +81,7 @@
     {
       "name": "arkiv",
       "url": "https://cantonvenues.com/api/v1/arkiv.json",
-      "about": "where the hourly record on Arkiv (Tiramisu testnet) lives: each hour the quote check and the best-execution verdicts are written as readonly entities whose contents cannot be changed afterwards; the creator address, the query to read them, and the latest entity of each kind"
+      "about": "where the hourly record on Arkiv (Rabdi testnet, Arkiv 1.0) lives: each hour the quote check and the best-execution verdicts are written as readonly entities whose contents cannot be changed afterwards; the creator address, the query to read them, the latest entity of each kind, and the earlier run on Tiramisu"
     },
     {
       "name": "weekly",

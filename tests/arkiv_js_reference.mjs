@@ -1,24 +1,31 @@
-// Prints the calldata the official JS SDK (@arkiv-network/sdk) builds for one createEntity call.
+// Prints the calldata the official JS SDK (@arkiv-network/sdk 1.0.x) builds for one createEntity call.
 // The SDK runs its real createEntity; a fake transport answers the chain lookups and captures the
 // signed transaction instead of sending it. Spec on stdin:
-// {"payloadHex": "...", "contentType": "...", "attributes": [[name, tag, value], ...],
+// {"schema": "canton-venues.log" | null, "attributes": [[name, tag, value, indexed], ...],
 //  "lifetimeS": 86400, "readonly": false, "salt": "123"}
-import { createWalletClient, ExpirationTime, u64, str, bytes32 } from "@arkiv-network/sdk"
-import { tiramisu } from "@arkiv-network/sdk/chains"
-import { custom, parseTransaction, hexToBytes } from "viem"
+// A bytes value is hex, a u64 a decimal string.
+import { createWalletClient, ExpirationTime } from "@arkiv-network/sdk"
+import { rabdi } from "@arkiv-network/sdk/chains"
+import { bytes, defineSchema, str, u64 } from "@arkiv-network/sdk/schema"
+import { custom, hexToBytes, parseTransaction } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 
 const spec = JSON.parse(await new Promise((ok) => {
   let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => ok(s))
 }))
-const tags = { u64: (v) => u64(BigInt(v)), str: (v) => str(v), bytes32: (v) => bytes32(v) }
-const attributes = Object.fromEntries(spec.attributes.map(([n, t, v]) => [n, tags[t](v)]))
+const columnOf = { str: () => str(), u64: () => u64(), bytes: () => bytes() }
+const valueOf = { str: (v) => str(v), u64: (v) => u64(BigInt(v)), bytes: (v) => hexToBytes("0x" + v) }
+const columns = Object.fromEntries(spec.attributes.map(([n, t, , indexed]) =>
+  [n, indexed ? columnOf[t]().indexed() : columnOf[t]()]))
+const values = Object.fromEntries(spec.attributes.map(([n, t, v]) => [n, valueOf[t](v)]))
+const schema = spec.schema ? defineSchema(spec.schema, columns) : defineSchema(columns)
 
+const chain = rabdi({ accessKey: "reference" })
 let captured
 const transport = custom({
   async request({ method, params }) {
     switch (method) {
-      case "eth_chainId": return "0x" + tiramisu.id.toString(16)
+      case "eth_chainId": return "0x" + chain.id.toString(16)
       case "eth_blockNumber": return "0x1000"
       case "eth_getTransactionCount": return "0x0"
       case "eth_estimateGas": return "0x100000"
@@ -30,16 +37,10 @@ const transport = custom({
     }
   },
 })
-const client = createWalletClient({
-  chain: tiramisu, transport,
-  account: privateKeyToAccount("0x" + "11".repeat(32)),
-})
+const client = createWalletClient({ chain, transport, account: privateKeyToAccount("0x" + "11".repeat(32)) })
 try {
-  await client.createEntity({
-    payload: hexToBytes("0x" + spec.payloadHex),
-    contentType: spec.contentType,
-    attributes,
-    expires: ExpirationTime.fromSeconds(spec.lifetimeS),
+  await client.createEntity(schema, values, {
+    expiration: ExpirationTime.fromSeconds(spec.lifetimeS),
     flags: { readonly: spec.readonly },
     salt: BigInt(spec.salt),
   })
