@@ -1,7 +1,7 @@
 """Kora joins the site as a priced spot order book (2026-11-23): its USDCx books are compared like
 Temple's, its CC/USDCx book joins every CC/USDCx comparison and the CC price, each book takes the taker
-fee Kora states for that market, and its own 24h volume is read but counted nowhere while
-``collect.KORA_VOLUME_PUBLISHED`` is off.
+fee Kora states for that market, and its own 24h volume counts as Temple's does (on from 2026-11-23,
+founder); with ``collect.KORA_VOLUME_PUBLISHED`` off it is read but counted nowhere.
 
 Kora's CBTC-USDCx book on 2026-11-23 20:50 UTC showed $129K of bids and $859 of asks: a buy past the
 asks must read as "cannot fill" on Kora, never as its best price."""
@@ -97,6 +97,7 @@ def test_kora_cc_book_joins_cc_usdcx_and_the_cc_price(tmp_path, monkeypatch):
 
 
 def test_kora_volume_is_counted_nowhere_while_the_switch_is_off(tmp_path, monkeypatch):
+    monkeypatch.setattr(collect, "KORA_VOLUME_PUBLISHED", False)
     base = _tick(tmp_path / "a", monkeypatch)
     out = _tick(tmp_path / "b", monkeypatch, optional={"kora": _kora()})
     row = next(v for v in out["venues"]["venues"] if v["id"] == "kora")

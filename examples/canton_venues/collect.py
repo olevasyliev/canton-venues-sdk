@@ -145,11 +145,11 @@ UNNAMED = "token not named by any venue we price"
 SECOND_POOL = "a second pool for the same token"
 # Rocky quote asset (upper-cased; the venue mixes cases) -> our token key
 ROCKY_QUOTES = {"USDCX": USDCX, "USDC.B": "USDC.B"}
-# Kora's own 24h volume (its tickers' ``volumeUsd``) is read every tick but counted nowhere while this is
-# off: not in its row, a token's volume, CC's volume or any total. Its prints on 2026-11-23 were small
-# and fast (median $15 to $117 a trade, eXAU-USDCx about one a second), and whether to show that figure,
-# and how, is the founder's call. Its prices, books and fees are read and compared either way.
-KORA_VOLUME_PUBLISHED = False
+# Kora's own 24h volume (its tickers' ``volumeUsd``) counts in its row, its tokens' volume, CC's volume and
+# every total, as Temple's own figure does (founder, 2026-11-23): each venue's volume is what it reports.
+# Its prints on 2026-11-23 were small and fast (median $15 to $117 a trade, eXAU-USDCx about one a
+# second). Off, the figure is read every tick but counted nowhere; prices, books and fees are compared either way.
+KORA_VOLUME_PUBLISHED = True
 # Canborsa's perp markets in the perps table -> the base as the other perp venues name it: its USDCx
 # markets of the assets with an outside spot price for the basis (``PERP_SPOT``, gold and silver
 # against Ekiden's spot index). It lists about 87 assets against four dollar tokens; the rest are
@@ -172,7 +172,7 @@ VENUES = [
     {"id": "rocky_perp", "name": "Rocky perps", "kind": "Perpetuals", "status": "priced",
      "note": "Order books and 24h tickers from the public API."},
     {"id": "kora", "name": "Kora", "kind": "Spot order book", "status": "priced",
-     "note": "Order books and each market's taker fee from the public API. Its 24h volume is not counted yet."},
+     "note": "Order books, each market's taker fee and 24h volume per market from the public API."},
     {"id": "ekiden", "name": "Ekiden", "kind": "Perpetuals", "status": "priced",
      "note": "MainNet tickers, mark, index and funding from the public API."},
     {"id": "poolparty", "name": "Pool Party", "kind": "Spot AMM", "status": "priced",
@@ -1518,7 +1518,7 @@ class Collector:
                                 time.monotonic() - started,
                                 cc_24h=self._cc_volume(books, tickers, tc_states, cc_usd, now))
         venues = self._venues(summary["cantex_24h"]["volume_usd"], rocky_spot_vol, perps, now)
-        if self.kora_volume:  # read, not published (KORA_VOLUME_PUBLISHED): for our own look only
+        if self.kora_volume and not KORA_VOLUME_PUBLISHED:  # read, not published: for our own look only
             log.info("kora 24h volume as Kora reports it (not published): %s",
                      {s: round(v) for s, v in sorted(self.kora_volume.items())})
 

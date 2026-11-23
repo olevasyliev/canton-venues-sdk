@@ -89,7 +89,7 @@ VOLUME_BASIS = {"temple": "usd", "tradecraft": "usd", "cantex": "cc", "poolparty
 
 # Venues that publish a 24h volume we do not count yet (collect.KORA_VOLUME_PUBLISHED): their pages say
 # "not counted yet", not "not published", which would be untrue of them.
-VOLUME_NOT_COUNTED = {"kora"}
+VOLUME_NOT_COUNTED: set[str] = set()  # Kora was here until its volume was counted (2026-11-23)
 
 # What the page states about how each venue is read, next to the numbers it qualifies.
 CAVEATS = {
@@ -110,7 +110,7 @@ CAVEATS = {
              "are not compared yet.",
              "Its CC/USDCx book is in every CC/USDCx comparison and in the CC price (weighted by its depth), "
              "as Temple's is.",
-             "With its 24h volume not counted yet, Kora has no volume rank here."],
+             "Volume is Kora's own 24h figure in dollars per market, its two eXAU-quoted books included."],
     "oneswap": ["Volume is not published, so OneSwap has no volume figure or volume rank.",
                 "Priced from reserves as a constant-product pool with a 0.30% fee.",
                 "Network fee per trade: OneSwap's own quote, taken from the amount sold, read every hour. "

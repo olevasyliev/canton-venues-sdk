@@ -73,9 +73,10 @@ STYLES = {
     "kora": {
         "source": "https://kora.trade (CSS .dark-theme --app-background #0d0f12, --background slate-900 #111417, "
                   "--card slate-800 #1b1f23, slate-700 #272b32, --foreground neutral-50 #f0f3f6, --muted-foreground "
-                  "neutral-300 #9da3b0, --accent purple-400 #ab9ff2, --success #7de3ba; read 2026-11-23; its face "
-                  "is Saans, Inter stands in)",
-        "bg": "#0d0f12", "bg2": "#111417", "ink": "#f0f3f6", "muted": "#9da3b0", "accent": "#ab9ff2",
+                  "neutral-300 #9da3b0, --primary #7DE3BA (its mint: buttons, logo, Spot tab), --success #7de3ba; read "
+                  "2026-11-23; the purple --accent #ab9ff2 is the wallet kit's, not Kora's; its face is Saans, Inter "
+                  "stands in)",
+        "bg": "#0d0f12", "bg2": "#111417", "ink": "#f0f3f6", "muted": "#9da3b0", "accent": "#7de3ba",
         "rule": "#272b32",
         "tile": "#1b1f23", "tile_edge": "#272b32", "tile_label": "#9da3b0", "tile_ink": "#f0f3f6",
         "tile_note": "#9da3b0", "up": "#7de3ba",
