@@ -369,6 +369,9 @@ NETWORK_FEE: dict[str, tuple[str, Decimal, Decimal, Decimal, str]] = {
     "temple": ("cc", Decimal("0"), Decimal("0"), Decimal("0"), "documented"),
     "rocky": ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed"),
     "poolparty": ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed"),
+    # Kora states each market's taker fee in its public API but no network fee per trade, and we have
+    # not traded there (2026-11-23): the default assumption, as for Rocky.
+    "kora": ("cc", SWAP_COST_CC, SWAP_COST_CC, SWAP_COST_CC, "assumed"),
 }
 
 
@@ -481,7 +484,10 @@ BOOK_TAKER_FEE = {"rocky": Decimal("0.00025"),
                   # Temple: 3 bps taker, 1.5 bps maker on its Lightspeed v2 engine (help center, "Temple
                   # Lightspeed v2", 2026-09-21; its support chat named the same rate 2026-11-05). Its "Fees &
                   # Rebates" article still says 1 bp, and an account's fee tab showed 2.5 bps on 2026-11-05.
-                  "temple": Decimal("0.0003")}
+                  "temple": Decimal("0.0003"),
+                  # Kora: each market states its own (takerFeeBps 2.5 on all seven, 2026-11-23) and the
+                  # collector takes that; this stands in only for a market that states none.
+                  "kora": Decimal("0.00025")}
 
 
 @dataclass(frozen=True)

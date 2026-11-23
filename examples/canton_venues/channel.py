@@ -33,11 +33,11 @@ SCHEDULE = {0: "weekly", 1: "venue", 2: "execution", 3: "venue", 4: "pegs"}
 # checked against the venues' own: the quote check (quotecheck.py, hourly) must have passed for
 # Tradecraft and Cantex within ``CHECK_MAX_AGE_S``, and a claim may name only a venue whose prices are
 # checked: the AMMs whose quote engines our math matched in that check (Tradecraft, Cantex, OneSwap
-# with our SDK key) and the order books (Temple, Rocky: the book is the venue's own data). Pool Party
+# with our SDK key) and the order books (Temple, Rocky, Kora: the book is the venue's own data). Pool Party
 # publishes no quote to check against, so no claim names it. Without a passing check the channel says only what a venue's API confirms (volume,
 # liquidity, depth, counts): no execution or pegs post, no price-headline card, no loud alert.
 CHECK_MAX_AGE_S = 3 * 3600
-BOOK_VENUES = {"temple", "rocky"}
+BOOK_VENUES = {"temple", "rocky", "kora"}
 PRICE_KINDS = {"execution", "pegs"}
 # the hourly best-execution samples a post may count start here: Tradecraft's frozen pool, Cantex's
 # network fee four times too low and phantom routes are in the samples before (re-audit, 15.10)
@@ -52,7 +52,7 @@ MIN_EXEC_HOURS = 24           # less history than this and the execution post wa
 EXEC_PAIR = "USDCX"           # CC against USDCx, the pair every CC venue quotes
 EXEC_SIZES = (1_000, 10_000, 50_000)
 NAMES = {"cantex": "Cantex", "tradecraft": "Tradecraft", "rocky": "Rocky", "temple": "Temple",
-         "oneswap": "OneSwap", "poolparty": "Pool Party", "ekiden": "Ekiden"}
+         "oneswap": "OneSwap", "poolparty": "Pool Party", "ekiden": "Ekiden", "kora": "Kora"}
 
 
 @dataclass(frozen=True)

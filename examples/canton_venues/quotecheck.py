@@ -9,8 +9,8 @@ at the same minute. Every hour (canton-venues-quotecheck.timer): Cantex's fees m
 - OneSwap quotes with our SDK key (ONESWAP_SDK_KEY; quote calls only). It carves its network fee from
   the input (the same at any size, different by direction), so its output is our formula on the input
   less that fee; the fee per pair and direction goes to the collector too.
-- Pool Party publishes no quote: unchecked, and said so. Temple and Rocky are order books: the book we
-  walk is the venue's own data.
+- Pool Party publishes no quote: unchecked, and said so. Temple, Rocky and Kora are order books: the
+  book we walk is the venue's own data.
 
 Each CC pool holding $20K or more is asked at $100, $1K and $10K, both ways, and priced by our formula
 (``model.FORMULAS``) on reserves read the same minute. A gap over ``GAP_BP`` is asked again once (a
@@ -63,7 +63,8 @@ NO_ONESWAP_KEY = "no OneSwap SDK key on this machine"
 ONESWAP = "https://api.oneswap.cc/swapv2"
 UNCHECKED = {"poolparty": "it publishes no quote",
              "temple": "an order book: the book we walk is its own",
-             "rocky": "an order book: the book we walk is its own"}
+             "rocky": "an order book: the book we walk is its own",
+             "kora": "an order book: the book we walk is its own"}
 
 
 def _gap_bp(ours: Decimal, theirs: Decimal) -> float | None:

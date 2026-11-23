@@ -29,6 +29,7 @@ from .venues.canborsa import CanborsaPublicData
 from .venues.cantex import CantexAdapter
 from .venues.cantex_public import CantexPublicData
 from .venues.ekiden import EkidenAdapter
+from .venues.kora import KoraAdapter
 from .venues.oneswap import OneSwapPublicData
 from .venues.poolparty import PoolPartyPublicData
 from .venues.reserves import ReservePool, constant_product_output
@@ -74,6 +75,7 @@ __all__ = [
     "CantexAdapter",
     "CantexPublicData",
     "EkidenAdapter",
+    "KoraAdapter",
     "DexRefAdapter",
     "DemoAllocationAuthorizer",
     "AllocationSwapRoute",

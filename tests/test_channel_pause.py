@@ -22,7 +22,7 @@ def _check(t=NOW, cantex="ok"):
 
 
 def test_checked_venues_need_a_fresh_passing_check():
-    assert channel.checked_venues(_check(), NOW) == {"tradecraft", "cantex", "temple", "rocky"}
+    assert channel.checked_venues(_check(), NOW) == {"tradecraft", "cantex", "temple", "rocky", "kora"}
     assert channel.checked_venues(_check(cantex="gap"), NOW) == set()  # a gap anywhere: no price claim
     assert channel.checked_venues(_check(t=NOW - 4 * 3600), NOW) == set()  # stale: none
     assert channel.checked_venues(None, NOW) == set()

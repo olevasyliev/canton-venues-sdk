@@ -2,7 +2,7 @@
 
 > Live, read-only market data for the trading venues on the Canton Network: the same trade compared across venues at four sizes after each venue's network fee, Canton prices against outside markets, cross-venue spreads, pools and perps. Open JSON API and an MCP server, no key, no sign-up, cross-origin enabled.
 
-Venues read: Temple, Cantex, Tradecraft, OneSwap, Pool Party, Rocky (spot and perps), Ekiden (perps), Canborsa (perps). Snapshots refresh every five minutes. Nothing is signed or executed. Source: https://github.com/olevasyliev/canton-venues-sdk (open source).
+Venues read: Temple, Cantex, Tradecraft, OneSwap, Pool Party, Rocky (spot and perps), Kora, Ekiden (perps), Canborsa (perps). Snapshots refresh every five minutes. Nothing is signed or executed. Source: https://github.com/olevasyliev/canton-venues-sdk (open source).
 
 ## JSON API
 

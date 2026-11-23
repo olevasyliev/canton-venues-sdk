@@ -328,6 +328,28 @@ ETHUSDT, CCUSDT. `/fapi/v1/premiumIndex` was empty and `/fapi/v1/openInterest` r
 
 ---
 
+# Kora adapter (`venues/kora.py`) — read-only market data
+
+Spot order books (plus an RFQ desk) on Canton, kora.trade. Public REST, no key, under
+`https://spot.api.prod.kora.so/public/v1`; the routes were found in its web app's own API client and
+called live on MainNet on 2026-11-23 (20:50 to 21:55 UTC).
+
+| Method | Route | Notes |
+|---|---|---|
+| `connect` / `markets` / `taker_fees` | `GET /markets` | `markets[]`: `symbol` (`CBTC-USDCx`), `base`, `quote`, `status` (`active`), `tickSize`, `stepSize`, `minOrderBase`, `minNotionalQuote`, `maxOrderQtyMarket`, `takerFeeBps` (2.5 on every market), `makerFeeBps` (1), `takerDelayMs` (400) |
+| `tickers` / `volumes_usd` | `GET /exchange/tickers` | `tickers[]`: `market`, `last`, `bid`, `ask` (no sizes), `volume` (base), `quoteVolume`, `volumeUsd` with `volumeUsdAsOf` and `volumeUsdStale`; also `/exchange/ticker/{market}` |
+| `order_book` | `GET /exchange/depth/{market}?depth=` | `bids`/`asks` as `[price, qty]` strings, `bestBidPrice`/`bestAskPrice`, `asOf` (nanoseconds), `lastUpdateId`; `depth` 50 and 200 returned the whole book, 1000 is refused with `{"code", "error"}` |
+| `recent_trades` | `GET /exchange/trades/{market}?limit=` | `trades[]`: `tradeId`, `at`, `price`, `quantity`, `side` (`BUY`/`SELL`, read as the taker's side; not checked against a trade of ours), `settlementState` (`settled`); 100 by default, `limit=500` answered 500 |
+| `volume_candles` | `GET /exchange/candlesticks/{market}?interval=1h&startTime=` | `candles[]`: `openTime`, `o`/`h`/`l`/`c`, `v` (base), `closed` |
+| — | `GET /exchange/stats`, `/exchange/stats/allTime` | 501 on 2026-11-23; not used |
+
+Markets on 2026-11-23: CBTC-USDCx, CC-USDCx, cETH-USDCx, eXAU-USDCx, eXAG-USDCx, CBTC-eXAU, cETH-eXAU.
+No instrument ids are published, so its tokens match ours by symbol, as Temple's and Rocky's do. Also
+seen in the app, not read: a websocket at `wss://spot.api.prod.kora.so/public/v1/ws` and an RFQ service
+(`rfq.api.prod.kora.so`) whose quotes need a login.
+
+---
+
 # OneSwap (`venues/oneswap.py`) and Pool Party (`venues/poolparty.py`) — reserves only
 
 Both are AMMs that publish reserves without a key and no keyless quote route, so pools are priced

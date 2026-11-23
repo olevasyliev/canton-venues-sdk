@@ -54,6 +54,9 @@ VENUES = [
      "x": "cantex_io", "x_source": "https://www.cantex.io"},
     {"slug": "rocky", "name": "Rocky", "rows": ["rocky", "rocky_perp"], "site": "https://rocky.exchange",
      "x": "Rocky_exchange", "x_source": "https://rocky.exchange"},
+    # kora.trade links no X account (its app bundle, read 2026-11-23): none until it does or the founder
+    # confirms one
+    {"slug": "kora", "name": "Kora", "rows": ["kora"], "site": "https://kora.trade"},
     # "lead": False would draw the plain card (name, pools, tokens, volume) even when the venue leads
     # a ranking; its leads are still computed and logged. Tradecraft's lead (its CC/USDCx pool) is on
     # since 2026-10-07: the founder asked for every venue's real strength on its page.
@@ -82,7 +85,11 @@ KEYED_BOOKS = {"temple"}
 #   quote  turnover in each book's quote token, stablecoins counted at $1 and USDCx at its price
 #          (Rocky /ticker/24hr quoteVolume, Ekiden /market/tickers turnover_24h)
 VOLUME_BASIS = {"temple": "usd", "tradecraft": "usd", "cantex": "cc", "poolparty": "cc_leg",
-                "rocky": "quote", "rocky_perp": "quote", "ekiden": "quote", "canborsa": "quote"}
+                "rocky": "quote", "rocky_perp": "quote", "ekiden": "quote", "canborsa": "quote", "kora": "usd"}
+
+# Venues that publish a 24h volume we do not count yet (collect.KORA_VOLUME_PUBLISHED): their pages say
+# "not counted yet", not "not published", which would be untrue of them.
+VOLUME_NOT_COUNTED = {"kora"}
 
 # What the page states about how each venue is read, next to the numbers it qualifies.
 CAVEATS = {
@@ -97,6 +104,13 @@ CAVEATS = {
               "schedule. Its network fee per trade is our assumption (1.5 CC).",
               "Books quoted in USDC.B are valued at par ($1), not at USDC.B's pool price.",
               "Its USDC.B books count as dollars at par in dollar routes while USDC.B holds within 1% of $1."],
+    "kora": ["Taker fee: the rate Kora's public API states for each market, read every tick (2.5 bps on all of "
+             "them on 23 Nov 2026). Its network fee per trade is our assumption (1.5 CC).",
+             "Its books quoted in USDCx are read: CBTC, cETH, eXAU, eXAG and CC. Its CBTC/eXAU and cETH/eXAU books "
+             "are not compared yet.",
+             "Its CC/USDCx book is in every CC/USDCx comparison and in the CC price (weighted by its depth), "
+             "as Temple's is.",
+             "With its 24h volume not counted yet, Kora has no volume rank here."],
     "oneswap": ["Volume is not published, so OneSwap has no volume figure or volume rank.",
                 "Priced from reserves as a constant-product pool with a 0.30% fee.",
                 "Network fee per trade: OneSwap's own quote, taken from the amount sold, read every hour. "
@@ -1937,7 +1951,7 @@ def venue_page(f: dict, head: dict, t: int, card_v: int | None = None) -> str:
         if rank := page_rank(f["spot_rank"], f["spot_n"]):
             st.append(("Rank by spot volume", rank))
     elif "spot_rank" in f:
-        st.append(("Spot volume, 24h", "Not published"))
+        st.append(("Spot volume, 24h", "Not counted yet" if f["id"] in VOLUME_NOT_COUNTED else "Not published"))
     if f.get("spot_share"):
         st.append(("Share of spot volume", f"{f['spot_share'] * 100:.1f}%"))
     if f.get("swaps_24h") is not None:
@@ -2105,7 +2119,7 @@ def index_page(all_facts: dict, heads: dict, t: int, card_v: dict | None = None)
         elif f.get("perp_volume") is not None:  # perps-only: the Perps column already shows it
             v24 = ""
         else:
-            v24 = '<span class="muted">not published</span>'
+            v24 = (f'<span class="muted">{"not counted yet" if f["id"] in VOLUME_NOT_COUNTED else "not published"}</span>')
         # blank where the venue has no such thing (no perps, no open interest); n/a only where it has
         # it and we cannot show it
         perps = money(f["perp_volume"]) if f.get("perp_volume") is not None else ""

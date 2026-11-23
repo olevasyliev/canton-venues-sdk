@@ -127,12 +127,12 @@ def _premium_row(key: str) -> dict | None:
 server = MCPServer(
     "canton-venues",
     title="Canton Venues",
-    description="Live market data for Canton Network DEXes (Temple, Cantex, Tradecraft, Rocky, OneSwap, Pool Party, Ekiden): prices, "
+    description="Live market data for Canton Network DEXes (Temple, Cantex, Tradecraft, Rocky, Kora, OneSwap, Pool Party, Ekiden): prices, "
                 "premium to global markets, best execution, spreads, perps, alerts.",
     instructions=(
         "Market data for Canton Network DEXes, refreshed every five minutes. Prices are in USD. "
         "Tokens are named by symbol (CC is Canton Coin). Use quote() for any trade size: every venue "
-        "is priced on its own markets (pools from live reserves, the Temple and Rocky order books), in one "
+        "is priced on its own markets (pools from live reserves, the Temple, Rocky and Kora order books), in one "
         "swap or two, as the site's best execution compares them; each venue's output comes before and "
         "after its per-trade network fee (network_fees). exit_cost() says what selling a token for dollars "
         "nets at any size and how much sells within 1%, 2% or 5%; check_trade() prices a trade you already "
@@ -242,7 +242,7 @@ def quote(
 ) -> dict:
     """Best execution for selling `amount` of token `sell` (or `amount_usd` worth) for token `buy`, on
     every venue that can make the trade on its own markets in one or two swaps: an AMM pool (Cantex,
-    Tradecraft, OneSwap, Pool Party), an order book (Temple, Rocky), or two of them in a row on the same
+    Tradecraft, OneSwap, Pool Party), an order book (Temple, Rocky, Kora), or two of them in a row on the same
     venue (Temple: CC to USDCx, then USDCx to CBTC; Pool Party: CC to USDC.B, then USDC.B to CBTC). The
     same comparison as the site's best execution, at any size. Pool fees, book fees and price impact are
     included; `after_network_fee` also takes off the venue's per-trade network fee on each swap (the fee
@@ -324,7 +324,7 @@ def premiums(
 def spreads(limit: Annotated[int, Field(description="How many routes to return, best first, 1 to 50")] = 10) -> dict:
     """Buy-on-one-venue, sell-on-the-other round trips at their best size, after each venue's network
     fee: `cost_cc` per route, `swap_cost_cc` per venue (Cantex and OneSwap their own quotes, checked
-    against our trades; Tradecraft and Temple none per trade; Rocky and Pool Party assumed at 1.5 CC). A trip through an order book in dollars (via=usd) also
+    against our trades; Tradecraft and Temple none per trade; Rocky, Kora and Pool Party assumed at 1.5 CC). A trip through an order book in dollars (via=usd) also
     pays the CC/USDCx leg of each pool side. `clears` is true when one nets at least $0.50."""
     s = load("scan")
     return {"as_of": s["t"], "swap_cost_cc": s.get("swap_cost_cc"), "routes": s["routes"][:max(1, min(limit, 50))]}
@@ -414,7 +414,7 @@ def check_trade(
         description="When the trade ran: ISO 8601 such as 2026-10-27T18:05:00Z, or unix seconds; the archive "
                     "starts 27 Oct 2026 21:01 UTC")],
     venue: Annotated[str | None, Field(
-        description="Optional: the venue it ran on, e.g. cantex, tradecraft, oneswap, temple, rocky or poolparty")] = None,
+        description="Optional: the venue it ran on, e.g. cantex, tradecraft, oneswap, temple, rocky, kora or poolparty")] = None,
 ) -> dict:
     """Was a trade well executed? Give the token sold and bought, the amount sold, the amount received,
     the time (ISO such as 2026-10-27T18:05:00Z, or unix seconds) and optionally the venue. The trade

@@ -4,6 +4,7 @@ Sources, all public, no keys:
   Cantex      /v1/public REST + websocket candles   (CantexPublicData)
   Tradecraft  /v1 REST                               (TradecraftAdapter)
   Rocky       spot and perp order books              (RockyAdapter)
+  Kora        spot order books and their taker fees  (KoraAdapter)
   Ekiden      MainNet perpetuals                     (EkidenAdapter)
   OneSwap     pool reserves                          (OneSwapPublicData)
   Pool Party  pool reserves and volume               (PoolPartyPublicData)
@@ -55,6 +56,7 @@ from cantonvenues import (
     CantexPublicData,
     EkidenAdapter,
     Instrument,
+    KoraAdapter,
     OneSwapPublicData,
     PoolPartyPublicData,
     RockyAdapter,
@@ -140,6 +142,11 @@ UNNAMED = "token not named by any venue we price"
 SECOND_POOL = "a second pool for the same token"
 # Rocky quote asset (upper-cased; the venue mixes cases) -> our token key
 ROCKY_QUOTES = {"USDCX": USDCX, "USDC.B": "USDC.B"}
+# Kora's own 24h volume (its tickers' ``volumeUsd``) is read every tick but counted nowhere while this is
+# off: not in its row, a token's volume, CC's volume or any total. Its prints on 2026-11-23 were small
+# and fast (median $15 to $117 a trade, eXAU-USDCx about one a second), and whether to show that figure,
+# and how, is the founder's call. Its prices, books and fees are read and compared either way.
+KORA_VOLUME_PUBLISHED = False
 # Canborsa's perp markets in the perps table -> the base as the other perp venues name it: its USDCx
 # markets of the assets with an outside spot price for the basis (``PERP_SPOT``, gold and silver
 # against Ekiden's spot index). It lists about 87 assets against four dollar tokens; the rest are
@@ -161,6 +168,8 @@ VENUES = [
      "note": "Order books and 24h tickers from the public API."},
     {"id": "rocky_perp", "name": "Rocky perps", "kind": "Perpetuals", "status": "priced",
      "note": "Order books and 24h tickers from the public API."},
+    {"id": "kora", "name": "Kora", "kind": "Spot order book", "status": "priced",
+     "note": "Order books and each market's taker fee from the public API. Its 24h volume is not counted yet."},
     {"id": "ekiden", "name": "Ekiden", "kind": "Perpetuals", "status": "priced",
      "note": "MainNet tickers, mark, index and funding from the public API."},
     {"id": "poolparty", "name": "Pool Party", "kind": "Spot AMM", "status": "priced",
@@ -278,6 +287,21 @@ def _tc_swap(st):
     return swap
 
 
+def _book_name(held: dict, b) -> str:
+    """The name a book is listed under among ``held`` ({name: (book, quote)}): its market, or its venue
+    and market when another venue's book already holds that name."""
+    taken = held.get(b.symbol)
+    return b.symbol if taken is None or taken[0].venue == b.venue else f"{b.venue}:{b.symbol}"
+
+
+def _cc_books_json(collector, cc_books: dict) -> dict:
+    """Every venue's CC/USDCx book for pools.json, each under its market name (``_book_name``)."""
+    held: dict = {}
+    for b in cc_books.values():
+        held[_book_name(held, b)] = (b, USDCX)
+    return {name: collector._book_json(b, q) for name, (b, q) in held.items()}
+
+
 def _trip_pools(route: dict) -> set:
     """The markets a scanner round trip trades on: (venue, market) pairs from its fingerprint, or its
     two venues' pools of the token for a pool-to-pool trip priced in CC."""
@@ -307,7 +331,7 @@ class Collector:
         self.cantex = CantexPublicData()
         self.tradecraft = TradecraftAdapter()
         # order-book venues: optional, each fails alone and reconnects on a later tick
-        self.optional = {"rocky": RockyAdapter(), "rocky_perp": RockyAdapter("perp"),
+        self.optional = {"rocky": RockyAdapter(), "rocky_perp": RockyAdapter("perp"), "kora": KoraAdapter(),
                          "ekiden": EkidenAdapter(), "oneswap": OneSwapPublicData(),
                          "poolparty": PoolPartyPublicData(), "temple": TempleAdapter(),
                          "canborsa": CanborsaPublicData()}
@@ -383,6 +407,9 @@ class Collector:
         self.over: dict[tuple[str, str], dict] = {}
         # Rocky's 24h volume per market from its own hourly candles ({"t", "markets": {symbol: quote units}})
         self.rocky_candles: dict = {}
+        self.kora_cc_book = False  # Kora's CC/USDCx book read this tick (it joins the CC price and comparisons)
+        # Kora's own 24h dollar volume per market, this tick: published only under KORA_VOLUME_PUBLISHED
+        self.kora_volume: dict[str, float] = {}
 
     async def start(self) -> None:
         await self.cantex.connect()
@@ -739,6 +766,72 @@ class Collector:
             self._drop("temple", exc)
             return {}, {}, None, None
 
+    async def _kora_spot(self, books, usdcx_usd) -> tuple[dict, dict, m.BookVenue | None]:
+        """Kora's USDCx books from its public API, in Temple's shape, plus its CC/USDCx book, which joins
+        every CC/USDCx comparison and the CC price as Temple's does (``m.CCBook``).
+
+        Each book takes the taker fee Kora states for that market (2.5 bps on all seven, 2026-11-23);
+        ``model.BOOK_TAKER_FEE["kora"]`` stands in only for a market that states none. Its books quoted in
+        eXAU (CBTC-eXAU, cETH-eXAU) are left out: no book quoted in anything but a dollar token enters our
+        routes, depth or prices yet. Kora's own 24h volume is read into ``self.kora_volume`` and counted
+        only under ``KORA_VOLUME_PUBLISHED``.
+        """
+        self.kora_cc_book = False
+        self.kora_volume = {}
+        kora = await self._venue("kora")
+        if kora is None:
+            return {}, {}, None
+        try:
+            markets = await kora.markets()
+            fees = await kora.taker_fees()
+            out, kept, cc_book, errors, tried = {}, {}, None, [], 0
+            for mk in markets:
+                if not mk.is_trading or m.key(mk.quote) != USDCX:
+                    continue
+                k = m.key(mk.base)
+                tried += 1
+                try:  # one book that fails is left out alone, not every Kora book
+                    book = await kora.order_book(mk.symbol)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{mk.symbol}: {type(exc).__name__}: {exc}"[:120])
+                    continue
+                if book.mid_price is None:  # a side empty: no market to compare
+                    continue
+                if book.best_bid.price >= book.best_ask.price:  # a crossed book is no market
+                    errors.append(f"{mk.symbol}: crossed book")
+                    continue
+                fee = fees.get(mk.symbol, m.BOOK_TAKER_FEE["kora"])
+                depth = self._depth_backed("kora", mk.symbol, book, k, USDCX, book.mid_price, usdcx_usd)
+                info = {"symbol": mk.symbol, "quote": USDCX, "price_usd": r(book.mid_price * usdcx_usd, 8),
+                        "depth_usd": r(depth, 2),
+                        "spread_bps": r((book.best_ask.price / book.best_bid.price - 1) * 10_000, 2),
+                        "volume_24h_usd": None}
+                bv = m.BookVenue("kora", mk.symbol, tuple((lv.price, lv.size) for lv in book.bids),
+                                 tuple((lv.price, lv.size) for lv in book.asks), usdcx_usd, fee)
+                if k == CC:
+                    cc_book = bv
+                    continue
+                out[k] = {"kora": info}
+                kept[k] = {"kora": bv}
+            if tried and not out and cc_book is None:  # every book failed or one-sided: Kora was not read
+                raise ValueError(f"no usable book ({'; '.join(errors)[:200]})")
+            for e in errors:
+                log.warning("kora book %s", e)
+            try:  # its own dollar figure per market, kept apart (KORA_VOLUME_PUBLISHED)
+                self.kora_volume = {s: float(v["usd"]) for s, v in (await kora.volumes_usd()).items()
+                                    if v["usd"] is not None and not v["stale"]}
+            except Exception as exc:  # noqa: BLE001
+                log.warning("kora volume: %r", exc)
+            if KORA_VOLUME_PUBLISHED:
+                for k, v in out.items():
+                    v["kora"]["volume_24h_usd"] = r(self.kora_volume.get(v["kora"]["symbol"]), 2)
+            self.kora_cc_book = cc_book is not None
+            self.fresh["kora"] = int(time.time())
+            return out, kept, cc_book
+        except Exception as exc:  # noqa: BLE001
+            self._drop("kora", exc)
+            return {}, {}, None
+
     def _metal(self, base: str, index: Decimal | None, now: int) -> Decimal | None:
         """Ekiden's index for a metal as its spot price, or None: market closed, no index, or an index
         that has not moved for ``METAL_STILL_MAX_S`` while the market trades."""
@@ -976,6 +1069,8 @@ class Collector:
                "rocky": rocky_spot_vol, **perp_vol}
         temple_live = self._fresh("temple_volume", now, TEMPLE_MAX_AGE_S)
         own["temple"] = self.slow.get("temple_total") if temple_live else None
+        if KORA_VOLUME_PUBLISHED and self.kora_volume and "kora" in self.live:
+            own["kora"] = sum(self.kora_volume.values())
         if "poolparty" in self.live and self.slow.get("pp_volume") is not None:
             own["poolparty"] = self._pp_volume_usd(self.cc_usd_last)[1]
         rows = []
@@ -1004,6 +1099,9 @@ class Collector:
             if v["id"] == "rocky" and rocky_spot_vol is not None and self.rocky_books:
                 # each spot book's turnover, in dollars the same way the venue total is
                 rows[-1]["markets_24h_usd"] = {k: r(x, 2) for k, x in sorted(self.rocky_books.items())}
+            if v["id"] == "kora" and own.get("kora") is not None:
+                # each market's 24h volume in dollars as Kora reports it (only under KORA_VOLUME_PUBLISHED)
+                rows[-1]["markets_24h_usd"] = {k: r(x, 2) for k, x in sorted(self.kora_volume.items())}
         spot = [x for x in rows if x["kind"] != "Perpetuals" and x["volume_24h_usd"]]
         total = sum(x["volume_24h_usd"] for x in spot)
         priced = sum(x["volume_24h_usd"] for x in spot if x["status"] == "priced")
@@ -1046,6 +1144,9 @@ class Collector:
         rk = [v for s, v in self.rocky_books.items() if CC in (m.key(s.split("-")[0]), m.key(s.split("-")[-1]))]
         if rk:
             out["rocky"] = sum(rk)
+        if self.kora_cc_book:  # a CC market whose volume is not counted (KORA_VOLUME_PUBLISHED) is unknown
+            kc = [v for s, v in self.kora_volume.items() if CC in (m.key(s.split("-")[0]), m.key(s.split("-")[-1]))]
+            out["kora"] = sum(kc) if KORA_VOLUME_PUBLISHED and kc else None
         known = [v for v in out.values() if v is not None]
         return {"volume_usd": r(sum(known), 2) if known else None,
                 "venues": {v: r(x, 2) for v, x in sorted(out.items(), key=lambda kv: -(kv[1] or 0))}}
@@ -1356,13 +1457,14 @@ class Collector:
             raise RuntimeError("no CC/USDCx pool on any venue")
         self.over = {}
         t_ob, t_books, _, temple_cc_book = await self._temple_spot(books, usdcx_usd)
+        k_ob, k_books, kora_cc_book = await self._kora_spot(books, usdcx_usd)
         # Temple's CC/USDCx book is one of the CC/USDCx markets: it weighs in the CC price by its depth
         # (as every token's price weighs its venues) and joins every CC/USDCx comparison (best
         # execution, the scanner, the paper router, the dollar routes' CC leg); the token list and the
-        # pool tables stay the pools'
-        cc_markets = stable
-        if temple_cc_book is not None and temple_cc_book.bids and temple_cc_book.asks:
-            cc_markets = {**stable, "temple": m.CCBook("temple", next(iter(stable.values())).token, temple_cc_book)}
+        # pool tables stay the pools'. Kora's CC/USDCx book the same way, from 2026-11-23.
+        cc_books = {v: b for v, b in (("temple", temple_cc_book), ("kora", kora_cc_book))
+                    if b is not None and b.bids and b.asks}
+        cc_markets = {**stable, **{v: m.CCBook(v, next(iter(stable.values())).token, b) for v, b in cc_books.items()}}
         self.still = {}
         cc_markets = self._still_cc_markets(cc_markets, candidates, usdcx_usd, now)
         cc_usd = m.cc_price_usd(cc_markets, usdcx_usd)
@@ -1373,11 +1475,14 @@ class Collector:
                       if isinstance(p, m.CCBook) or 2 * p.cc_reserve * cc_usd >= MIN_MARKET_USD}
 
         ob, ob_books, rocky_spot_vol = await self._rocky_spot(books, cc_usd, usdcx_usd)
-        for k, v in t_ob.items():
-            ob.setdefault(k, {}).update(v)
-        for k, v in t_books.items():  # Temple's token books, quoted in USDCx, in Rocky's shape
-            for b in v.values():
-                ob_books.setdefault(k, {})[b.symbol] = (b, USDCX)
+        for src in (t_ob, k_ob):
+            for k, v in src.items():
+                ob.setdefault(k, {}).update(v)
+        for src in (t_books, k_books):  # Temple's and Kora's token books, quoted in USDCx, in Rocky's shape
+            for k, v in src.items():
+                for b in v.values():
+                    held = ob_books.setdefault(k, {})
+                    held[_book_name(held, b)] = (b, USDCX)
         perps = await self._perps(gecko, cc_usd, now)
         self._still_pools(books, candidates, cc_usd, ob, now)
         # the comparisons leave out every pool marked not trading (its rows still list it)
@@ -1410,6 +1515,9 @@ class Collector:
                                 time.monotonic() - started,
                                 cc_24h=self._cc_volume(books, tickers, tc_states, cc_usd, now))
         venues = self._venues(summary["cantex_24h"]["volume_usd"], rocky_spot_vol, perps, now)
+        if self.kora_volume:  # read, not published (KORA_VOLUME_PUBLISHED): for our own look only
+            log.info("kora 24h volume as Kora reports it (not published): %s",
+                     {s: round(v) for s, v in sorted(self.kora_volume.items())})
 
         write_json(self.api / "tokens.json", {"t": now, "tokens": tokens})
         write_json(self.api / "premium.json", {"t": now, "assets": premium})
@@ -1426,7 +1534,7 @@ class Collector:
         write_json(self.api / "scan.json", {"t": now,
                                             "swap_cost_cc": {v: float(m.swap_cost_cc(v, cc_usd)) for v in
                                                              ("cantex", "tradecraft", "oneswap", "poolparty", "rocky",
-                                                              "temple")},
+                                                              "temple", "kora")},
                                             "min_usd": float(m.MIN_ROUTE_USD), "routes": scan})
         write_json(self.api / "desk.json", self.desk)
         write_json(self.state / "pools_still.json", self.pool_still)
@@ -1435,12 +1543,13 @@ class Collector:
         pools_doc = {
             "t": now, "cc_usd": float(cc_usd),
             "pools": {k: {v: m.pool_to_json(p) for v, p in pools.items()} for k, pools in books.items()},
-            # every dollar-quoted book by token and market (Rocky's in USDCx and USDC.B, Temple's in
-            # USDCx); CC's own book on Temple sits under CC, so the MCP quote prices CC/USDCx on it too.
+            # every dollar-quoted book by token and market (Rocky's in USDCx and USDC.B, Temple's and
+            # Kora's in USDCx); CC's own books on Temple and Kora sit under CC, so the MCP quote prices
+            # CC/USDCx on them too. A market name another venue's book already holds is listed with its
+            # venue in front (``_book_name``).
             # ``over_supply``: its sides that show more than exists (supply.py), out of depth and exit
             "books": {k: {name: self._book_json(b, q) for name, (b, q) in vs.items()} for k, vs in ob_books.items()}
-            | ({CC: {temple_cc_book.symbol: self._book_json(temple_cc_book, USDCX)}}
-               if temple_cc_book is not None else {}),
+            | ({CC: _cc_books_json(self, cc_books)} if cc_books else {}),
             # pools of two other tokens a route can take (named, priced the venue's way: m.venue_hops)
             "other_pools": [{"venue": o["venue"], "a": m.key(o["a"]), "b": m.key(o["b"]), "ra": str(o["ra"]),
                              "rb": str(o["rb"]), "formula": o["formula"], "fee": str(o["fee"]),
@@ -1726,7 +1835,8 @@ class Collector:
                 week = list(hourly.values())
             spark = [round(v, 8) for t, v in week][-168:]
             unknown = ("oneswap" in venues or ("tradecraft" in venues and not tc_live)
-                       or ("temple" in venues and not temple_live))
+                       or ("temple" in venues and not temple_live)
+                       or ("kora" in venues and not KORA_VOLUME_PUBLISHED))
             traded = None if vol == 0 and unknown else vol > 0
             # under $1K traded in 24h its price is CC's times a frozen pool ratio: a 24h "move" would be
             # CC's (USDM1 -6.6%, six $20 pools -7.1% on 2026-10-15, CC -12.5%), so none is published
