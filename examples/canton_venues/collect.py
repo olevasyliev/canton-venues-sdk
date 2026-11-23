@@ -123,6 +123,9 @@ STEPS = [
      "what": "An order book side that shows more of a token than its own registry says exists no longer "
              "counts as depth: Rocky's CBTC book (about 237 BTC offered, 40.8 CBTC in existence) stopped "
              "weighing in CBTC's price, depth and exit cost; its price still counts in every comparison."},
+    {"id": "kora-cc-book", "keys": ["CC"], "premium": True,
+     "what": "Kora's CC/USDCx order book joins the CC price by its depth, as Temple's does (about 1% of "
+             "Temple's depth when added); its USDCx books join every dollar comparison."},
 ]
 # Alerts our own method made, taken out of the site's feed (founder 2026-10-15): (time, key). Between the
 # CC price step and the per-venue valuation fix on 14.10, pool tokens were valued at the market CC price
