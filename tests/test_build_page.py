@@ -111,3 +111,30 @@ def test_mcp_tools_on_the_build_page_match_the_api_index():
     listed = re.search(r"Tools: ([a-z_, ]+)\.", bp.page(T)).group(1).split(", ")
     assert listed == index["mcp"]["tools"]
     assert index["build"]["url"] == "https://cantonvenues.com/build/"
+
+
+def test_registration_keeps_what_a_bot_wants_next_and_says_it_in_telegram():
+    entry, _ = contact.read_form({"kind": "register", "app": "Arb Bot", "contact": "@arb",
+                                  "wants": "faster updates, archive"})
+    assert entry["wants"] == "faster updates, archive"
+    assert "Wants next: faster updates, archive" in contact.notify_text(entry)
+    plain = contact.read_form({"kind": "register", "app": "Wallet", "contact": "@t"})[0]
+    assert plain["wants"] == "" and "Wants next: -" in contact.notify_text(plain)
+    assert len(contact.read_form({"kind": "register", "app": "Ab", "contact": "c", "wants": "x" * 999})[0]["wants"]) \
+        == contact.LIMITS["wants"]
+
+
+def test_bots_section_points_to_the_form_and_promises_only_what_exists():
+    page = bp.page(T)
+    bots = page.split('<section class="block" id="bots">', 1)[1].split("</section>", 1)[0]
+    # the archive's start dates are the record's real first days, and the open API stays key-free
+    assert "since 27 October" in bots and "since 8 October" in bots and "no key" in bots
+    assert 'name="want" value="faster updates"' in page and "wants: wants.join" in page
+
+
+def test_the_bot_notice_links_to_the_bots_section_on_the_build_page():
+    import collect
+    assert "https://cantonvenues.com/build/#bots" in collect.BOT_NOTICE and 'id="bots"' in bp.page(T)
+    assert "—" not in collect.BOT_NOTICE
+    index = json.loads((Path(bp.__file__).parent / "site" / "api-index.json").read_text())
+    assert "https://cantonvenues.com/build/#bots" in index["bots"]

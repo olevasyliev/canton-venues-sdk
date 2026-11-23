@@ -5,8 +5,8 @@ forwarded by the site's Telegram bot to that chat. The file is the record; Teleg
 is the notification, so a failed send loses nothing.
 
 Two forms post here: the dashboard's contact form (a message) and the build page's
-"Register your app" (``kind: "register"``: the app, what it uses, whether it wants a
-listing and its own line for it). A listing goes up by hand (build_page.APPS), never
+"Register your app" (``kind: "register"``: the app, what it uses, what it wants next,
+whether it wants a listing and its own line for it). A listing goes up by hand (build_page.APPS), never
 straight from the form.
 
     python contact.py --port 8098 --log /opt/canton-venues/contact.jsonl
@@ -30,7 +30,8 @@ from pathlib import Path
 log = logging.getLogger("contact")
 
 MAX_BODY = 16_000
-LIMITS = {"name": 120, "contact": 200, "message": 4000, "app": 120, "url": 300, "uses": 200, "line": 280}
+LIMITS = {"name": 120, "contact": 200, "message": 4000, "app": 120, "url": 300, "uses": 200, "line": 280,
+          "wants": 200}
 
 
 def clean(form: dict, key: str) -> str:
@@ -41,7 +42,7 @@ def read_form(form: dict) -> tuple[dict | None, str]:
     """The entry to keep, or None and why not. A form without ``kind`` is the contact form."""
     if form.get("kind") == "register":
         entry = {"kind": "register", "app": clean(form, "app"), "url": clean(form, "url"),
-                 "uses": clean(form, "uses"), "contact": clean(form, "contact"),
+                 "uses": clean(form, "uses"), "wants": clean(form, "wants"), "contact": clean(form, "contact"),
                  "message": clean(form, "message"), "listed": form.get("listed") in (True, "on", "yes"),
                  "line": clean(form, "line")}
         if not entry["contact"] or len(entry["app"]) < 2:
@@ -62,6 +63,7 @@ def notify_text(entry: dict) -> str:
                 f"App: {q(entry['app'])}\n"
                 f"URL: {q(entry['url'] or '-')}\n"
                 f"Uses: {q(entry['uses'] or '-')}\n"
+                f"Wants next: {q(entry.get('wants') or '-')}\n"
                 f"Reply to: {q(entry['contact'])}\n"
                 f"Listing: {listing}\n\n"
                 f"{q(entry['message'] or '(nothing on what they build)')}")

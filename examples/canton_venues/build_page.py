@@ -6,7 +6,9 @@ The page changes only when this file does, so deploy writes it once:
     python build_page.py --out /var/www/canton-venues
 
 Registering is optional and changes nothing in the API: no key, the same files for everyone. It gets a
-team notice before a breaking change, direct help and, if it wants one, a listing. The form posts to
+team notice before a breaking change, direct help and, if it wants one, a listing. Bots that register say
+what they want next (faster updates, the archive, push alerts) and get it first; the API files point
+them here (collect.BOT_NOTICE). The form posts to
 contact.py (``kind: "register"``); a listing goes up by hand, in ``APPS``, after a look at the app.
 """
 
@@ -132,7 +134,8 @@ FORM_JS = """
     ev.preventDefault();
     var btn = f.querySelector("button[type=submit]");
     var uses = Array.prototype.map.call(f.querySelectorAll("input[name=use]:checked"), function (x) { return x.value; });
-    var body = { kind: "register", app: f.app.value, url: f.url.value, uses: uses.join(", "), contact: f.contact.value,
+    var wants = Array.prototype.map.call(f.querySelectorAll("input[name=want]:checked"), function (x) { return x.value; });
+    var body = { kind: "register", app: f.app.value, url: f.url.value, uses: uses.join(", "), wants: wants.join(", "), contact: f.contact.value,
                  message: f.message.value, listed: f.listed.checked, line: f.listed.checked ? f.line.value : "", website: f.website.value };
     if (!body.contact.trim() || body.app.trim().length < 2) { st.className = "st err"; st.textContent = "Add the app's name and a way to reach you."; return; }
     btn.disabled = true; st.className = "st"; st.textContent = "Sending…";
@@ -204,6 +207,17 @@ def page(t: int) -> str:
     </div>
   </section>
 
+  <section class="block" id="bots">
+    <h2>Running a bot on this API?</h2>
+    <p class="sub">Some of you poll these files every few minutes. We would like to know you and build what you need next. Register below and say what you want; registered bots get it first.</p>
+    <ul class="regwhy">
+      <li><b>Faster updates</b> than the public five-minute snapshot.</li>
+      <li><b>The archive:</b> every five-minute reading since 27 October and the hourly best-execution record since 8 October.</li>
+      <li><b>Push alerts</b> for the moves you watch, instead of polling.</li>
+    </ul>
+    <p class="fine">The open API does not change: the same files for everyone, no key.</p>
+  </section>
+
   <section class="block" id="register">
     <div class="reg">
       <div>
@@ -214,7 +228,7 @@ def page(t: int) -> str:
           <li><b>What you need next.</b> Ask for a pair, a field or a view; tell us what breaks for you.</li>
           <li><b>A listing on this page</b> if you want one, in your own words.</li>
         </ul>
-        <p class="fine">Registering is optional: the API is the same with it or without it. Your contact is used only to reach you about the data.</p>
+        <p class="fine">Registering is optional: the open API is the same with it or without it. Your contact is used only to reach you about the data.</p>
       </div>
       <form class="panel form" id="regform" novalidate>
         <div class="two">
@@ -227,6 +241,13 @@ def page(t: int) -> str:
             <label class="check"><input type="checkbox" name="use" value="quote or check"> Quote or check</label>
             <label class="check"><input type="checkbox" name="use" value="MCP"> MCP</label>
             <label class="check"><input type="checkbox" name="use" value="SDK"> SDK</label>
+          </div>
+        </fieldset>
+        <fieldset><legend>What you would want next</legend>
+          <div class="uses">
+            <label class="check"><input type="checkbox" name="want" value="faster updates"> Faster updates</label>
+            <label class="check"><input type="checkbox" name="want" value="archive"> The archive</label>
+            <label class="check"><input type="checkbox" name="want" value="push alerts"> Push alerts</label>
           </div>
         </fieldset>
         <label>Email or Telegram <input name="contact" required maxlength="200" placeholder="For notices and replies"></label>

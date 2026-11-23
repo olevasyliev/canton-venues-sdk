@@ -194,8 +194,29 @@ def _finite(x, where: list):
     return x
 
 
+# Bots poll the API every few minutes without a name, and no other channel reaches them, so the files
+# they read carry one line for whoever runs them. A new field,
+# last in the file: nothing that reads the existing fields changes. Running records that the collector
+# reads back (desk, history, venue_history) and the dated reports are left alone.
+BOT_NOTICE = ("Running a bot on this API? Register it, free: https://cantonvenues.com/build/#bots. Registered bots "
+              "get first access to what we build for them next (faster updates, the archive since October, push "
+              "alerts) and 14 days' notice before a breaking change. This API stays open and key-free.")
+NOTICE_FILES = frozenset({"summary.json", "tokens.json", "execution.json", "premium.json", "scan.json", "pools.json",
+                          "lp.json", "exit.json", "venues.json", "perps.json", "alerts.json", "spreads.json",
+                          "quotecheck.json"})
+
+
+def _with_notice(path: Path, data):
+    """``data`` with the bot notice added when ``path`` is one of the API files bots read."""
+    if (path.name in NOTICE_FILES and path.parent.name == "v1" and path.parent.parent.name == "api"
+            and isinstance(data, dict)):
+        return {**{k: v for k, v in data.items() if k != "notice"}, "notice": BOT_NOTICE}
+    return data
+
+
 def write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    data = _with_notice(path, data)
     tmp = path.with_suffix(".tmp")
     # A NaN or infinite number is written as null, with a warning: the file stays valid JSON and the
     # tick goes on. Until 2026-10-15 it failed the write, so one "NaN" in any venue's field (13 of 17
