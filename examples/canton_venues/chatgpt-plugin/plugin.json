@@ -1,0 +1,105 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "canton-venues",
+  "version": "1.0.0",
+  "description": "Live market data for every live decentralized exchange on Canton mainnet: prices, liquidity, the same trade compared across venues, premiums to global markets and alerts. Read-only.",
+  "author": {
+    "name": "Canton Venues",
+    "url": "https://cantonvenues.com"
+  },
+  "homepage": "https://cantonvenues.com",
+  "repository": "https://github.com/olevasyliev/canton-venues-sdk",
+  "license": "Apache-2.0",
+  "keywords": ["canton", "canton network", "canton coin", "dex", "market data", "prices", "liquidity", "best execution", "defi", "crypto"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Canton Venues",
+        "shortDescription": "Live Canton DEX market data",
+        "longDescription": "Canton Venues reads every live decentralized exchange on Canton mainnet every five minutes (Temple, Kora, Cantex, Tradecraft, Rocky, OneSwap and Pool Party for spot; Rocky, Ekiden and Canborsa for perpetuals) and compares them on the same trade.\n\nAsk where a token is cheapest at your size, how much of it sells within 1% of the price, how far Canton prices sit from global markets, or whether a trade you already made filled well. Answers come with the venue, the price after pool fees, price impact and each venue's network fee.\n\nFor traders, analysts and builders who follow the Canton Network.\n\nLimitations: every tool only reads data. Nothing executes, signs or stores a trade, and no account or key is needed. Coverage is the Canton venues named above; prices refresh every five minutes and the trade archive starts on 27 October 2026. The data is information, not investment advice.",
+        "developerName": "Canton Venues",
+        "category": "Finance",
+        "capabilities": [
+          "Compare one trade across every Canton DEX",
+          "Quote a trade at any size after fees",
+          "Measure how much of a token sells near the price",
+          "Check a past trade against every venue",
+          "Track Canton prices against global markets",
+          "Read live alerts, pools and perpetual markets"
+        ],
+        "websiteURL": "https://cantonvenues.com",
+        "supportURL": "https://cantonvenues.com/#contact",
+        "privacyPolicyURL": "https://cantonvenues.com/privacy/",
+        "termsOfServiceURL": "https://cantonvenues.com/terms/",
+        "defaultPrompt": [
+          "Which Canton DEX gives the best price for swapping $10K of CC to USDCx?",
+          "How much CC can I sell on Canton within 1% of the price?",
+          "How far is Canton's gold token from the global gold price?"
+        ],
+        "brandColor": "#3861FB",
+        "brandColorDark": "#6188FF",
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/logo.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Best venue for a swap at a given size",
+              "prompt": "Which Canton DEX gives the best price for swapping $10K of CC to USDCx right now?",
+              "tools_triggered": "quote",
+              "expected_behavior": "Lists the venues that can make the trade, ranked by USDCx received after pool fees, price impact and network fees, and names the best one."
+            },
+            {
+              "description": "How much of a token sells near the price",
+              "prompt": "How much CC can I sell on Canton within 1% of the price?",
+              "tools_triggered": "exit_cost",
+              "expected_behavior": "Gives the largest CC sale for dollars within 1% of the price on each venue and across all of them, with what limited each venue."
+            },
+            {
+              "description": "Canton price against the global market",
+              "prompt": "How far is Canton's gold token from the global gold price?",
+              "tools_triggered": "premiums",
+              "expected_behavior": "Gives the eXAU price on Canton, the gold spot reference and the premium or discount between them in percent."
+            },
+            {
+              "description": "Check a past trade",
+              "prompt": "I sold 10,000 CC for 700 USDCx on Cantex on 20 November 2026 at 12:00 UTC. Was that a good fill?",
+              "tools_triggered": "check_trade",
+              "expected_behavior": "Prices the same trade on every venue at that time, names the venue that would have returned the most and says how far the trade fell short of it in basis points."
+            },
+            {
+              "description": "Market overview",
+              "prompt": "Give me an overview of the Canton DEX market today.",
+              "tools_triggered": "market_overview",
+              "expected_behavior": "Gives the CC price, 24h volume per venue, top movers, the largest premiums to global prices and the latest alerts."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Executing a trade is not supported",
+              "prompt": "Buy 1,000 CC for me on Temple.",
+              "expected_behavior": "Does not trade: the plugin only reads market data. It can offer a quote for the same trade instead."
+            },
+            {
+              "description": "Markets outside the Canton Network",
+              "prompt": "What is Apple's stock price?",
+              "expected_behavior": "Does not use the plugin: it covers only Canton Network venues."
+            },
+            {
+              "description": "Personal investment advice",
+              "prompt": "Should I put my savings into Canton Coin?",
+              "expected_behavior": "Gives no recommendation: the data is information, not investment advice. It can show current prices and liquidity if asked."
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "Canton Venues sells nothing and processes no payments. Every tool reads public market data."
+      },
+      "publication": {
+        "countries": [],
+        "release_notes": "First release: twelve read-only tools for Canton Network DEX market data (prices, quotes at any size, exit cost, trade checks, premiums, spreads, alerts, pools, perpetuals and venues)."
+      }
+    }
+  }
+}
