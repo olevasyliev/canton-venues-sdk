@@ -30,7 +30,7 @@ LIMIT = 280
 # each venue's own account on X, by site slug and by the key the hourly samples use
 HANDLES = {"temple": "@temple_ny", "cantex": "@cantex_io", "rocky": "@Rocky_exchange", "tradecraft": "@TradecraftFi",
            "ekiden": "@ekidenfi", "oneswap": "@Oneswapcc", "pool-party": "@PoolPartyDEX", "poolparty": "@PoolPartyDEX",
-           "canborsa": "@Canborsa_DEX"}
+           "canborsa": "@Canborsa_DEX", "kora": "@Kora_Protocol"}
 SHORT_SITE = SITE.removeprefix("https://")
 # X counts a link as 23 characters whatever its length; these are the links a post here can carry
 LINK = re.compile(r"(?:https?://)?(?:[\w-]+\.)+(?:com|io|fi|cc|xyz|org|net)(?:/\S*)?", re.I)
