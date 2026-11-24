@@ -1,7 +1,7 @@
 """The pricing page: the open API stays free, Pro and Data partner sit on top, and a request form.
 
 Open is what the site already gives everyone (the key-free API, MCP, SDK, quotes and checks). Pro
-($199 a month) and Data partner (from $4,000 a month) are paid on top; nothing in the open API moves
+($199 a month) and Data partner (from $3,999 a month) are paid on top; nothing in the open API moves
 behind them, and venues cannot buy a place. The form posts to contact.py (``kind: "pricing"``), which
 keeps it and forwards it to the owner's Telegram.
 
@@ -37,7 +37,7 @@ TIERS = [
      "plus": "Everything in Open, plus",
      "items": ["Updates every minute", "Push alerts by webhook or Telegram", "Archive since 27 October 2026",
                "Higher rate limits"]},
-    {"id": "partner", "name": "Data partner", "from": True, "price": "$4,000", "per": "a month",
+    {"id": "partner", "name": "Data partner", "from": True, "price": "$3,999", "per": "a month",
      "desc": "For data companies, oracles and desks.",
      "cta": ("primary", "#request", "Talk to us", "partner"),
      "plus": "Everything in Pro, plus",
@@ -164,7 +164,7 @@ def page(t: int) -> str:
       <fieldset><legend>Plan</legend>
         <div class="plans-pick">
           <label><input type="radio" name="plan" value="pro" checked> Pro <span>$199 a month</span></label>
-          <label><input type="radio" name="plan" value="partner"> Data partner <span>from $4,000 a month</span></label>
+          <label><input type="radio" name="plan" value="partner"> Data partner <span>from $3,999 a month</span></label>
         </div>
       </fieldset>
       <div class="two">
@@ -179,7 +179,7 @@ def page(t: int) -> str:
     html = _shell("Pricing: Canton market data, free and paid | Canton Venues",
                   "The open Canton Venues API stays free. Pro: updates every minute, push alerts and the archive, "
                   "$199 a month. Data partner: delivery in your format with a methodology and incident notices, "
-                  "from $4,000 a month.",
+                  "from $3,999 a month.",
                   f"{SITE}/pricing/", None, body, t, FORM_JS)
     # the shared footer says every number "on this page" is in the API; prices are not
     html = html.replace("Every number on this page is in the open JSON API", "Every market number on this site is in the open JSON API", 1)

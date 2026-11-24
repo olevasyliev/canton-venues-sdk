@@ -30,7 +30,7 @@ def test_the_page_shows_three_tiers_in_order_with_their_prices():
     names = re.findall(r'<div class="tier" id="plan-(\w+)">\s*<h2>([^<]+)</h2>', html)
     assert names == [("open", "Open"), ("pro", "Pro"), ("partner", "Data partner")]
     prices = re.findall(r'<div class="tprice">(.*?)</div>', html)
-    assert prices == ["<b>$0</b>", "<b>$199</b><span>a month</span>", "<span>from</span><b>$4,000</b><span>a month</span>"]
+    assert prices == ["<b>$0</b>", "<b>$199</b><span>a month</span>", "<span>from</span><b>$3,999</b><span>a month</span>"]
     assert '<link rel="canonical" href="https://cantonvenues.com/pricing/">' in html
 
 
@@ -91,7 +91,7 @@ def test_a_pricing_request_needs_a_known_plan_a_name_and_a_contact():
 def test_a_pricing_request_reads_well_in_telegram_and_is_escaped():
     entry, _ = contact.read_form({"kind": "pricing", "plan": "partner", "app": "<b>Data</b> & Co", "contact": "a<b"})
     text = contact.notify_text(entry)
-    assert text.startswith("<b>cantonvenues.com: pricing request</b>\nPlan: Data partner, from $4,000 a month\n")
+    assert text.startswith("<b>cantonvenues.com: pricing request</b>\nPlan: Data partner, from $3,999 a month\n")
     assert "From: &lt;b&gt;Data&lt;/b&gt; &amp; Co" in text and "Reply to: a&lt;b" in text
     assert text.endswith("(nothing on what they need)")
 

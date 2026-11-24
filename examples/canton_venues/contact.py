@@ -33,7 +33,7 @@ log = logging.getLogger("contact")
 MAX_BODY = 16_000
 LIMITS = {"name": 120, "contact": 200, "message": 4000, "app": 120, "url": 300, "uses": 200, "line": 280,
           "wants": 200, "plan": 20}
-PLAN_NAMES = {"pro": "Pro, $199 a month", "partner": "Data partner, from $4,000 a month"}
+PLAN_NAMES = {"pro": "Pro, $199 a month", "partner": "Data partner, from $3,999 a month"}
 
 
 def clean(form: dict, key: str) -> str:
