@@ -360,7 +360,8 @@ def venues() -> dict:
     """Every Canton trading venue we know of: type, 24h volume, and whether we price it live,
     see its volume only, or cannot read it (key needed, testnet, no public API). Also the share of
     Canton spot DEX volume that these prices cover."""
-    return load("venues")
+    # the API files end with a line for bots that poll them (collect.BOT_NOTICE); not for an agent
+    return {k: v for k, v in load("venues").items() if k != "notice"}
 
 
 @server.tool(title="Perpetual futures", annotations=READ_ONLY)

@@ -30,6 +30,7 @@ ssh "$SERVER" "
   # the build page changes only with the code: written once per deploy (build_page.py)
   (cd current/examples/canton_venues && /opt/canton-venues/.venv/bin/python build_page.py --out /var/www/canton-venues)
   (cd current/examples/canton_venues && /opt/canton-venues/.venv/bin/python pricing_page.py --out /var/www/canton-venues)
+  (cd current/examples/canton_venues && /opt/canton-venues/.venv/bin/python legal_pages.py --out /var/www/canton-venues)
   install -m 644 current/examples/canton_venues/deploy/canton-venues.service current/examples/canton_venues/deploy/canton-venues-mcp.service current/examples/canton_venues/deploy/canton-venues-contact.service \
     current/examples/canton_venues/deploy/canton-venues-study.service current/examples/canton_venues/deploy/canton-venues-study.timer \
     current/examples/canton_venues/deploy/canton-venues-crosscheck.service current/examples/canton_venues/deploy/canton-venues-crosscheck.timer \

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Canton Venues: Canton DEX prices, premium and execution</title>
-<meta name="description" content="Live prices for every token on Canton Network DEXes, Canton's premium to global markets, best execution across venues, a spread scanner and a public paper desk. Open data, refreshed every five minutes.">
+<title>Canton Venues: Canton DEX analytics, prices and best execution</title>
+<meta name="description" content="Canton DEX analytics: live prices for every token on Canton Network DEXes, liquidity, best execution across venues, Canton's premium to global markets and a spread scanner. Free JSON API and an MCP server for AI agents, refreshed every five minutes.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
@@ -516,7 +516,7 @@ body:not(.tv) #tokenview { display: none; }
   </section>
 
   <footer class="foot">
-    <div><h4>Canton Venues</h4><p>Built by <a href="https://github.com/olevasyliev">Oleksii</a> on <a href="https://github.com/olevasyliev/canton-venues-sdk">Canton Venues SDK</a>, open source. Read-only: nothing here is signed or executed.</p><p><a href="https://t.me/cantonvenues">Telegram channel</a> · <a href="https://x.com/cantonvenues">X</a> · <a href="#contact">Contact</a></p><p id="updated"></p></div>
+    <div><h4>Canton Venues</h4><p>Built by <a href="https://github.com/olevasyliev">Oleksii</a> on <a href="https://github.com/olevasyliev/canton-venues-sdk">Canton Venues SDK</a>, open source. Read-only: nothing here is signed or executed.</p><p><a href="https://t.me/cantonvenues">Telegram channel</a> · <a href="https://x.com/cantonvenues">X</a> · <a href="#contact">Contact</a> · <a href="/privacy/">Privacy</a> · <a href="/terms/">Terms</a></p><p id="updated"></p></div>
     <div><h4>Method</h4><p>Tokens are matched by Canton instrument (issuer party and id); Pool Party publishes no issuer, so its tokens match by instrument id. Cantex and Tradecraft are priced from live reserves with each venue's own formula, OneSwap and Pool Party from reserves as constant-product pools (their fee and curve as documented or, for Pool Party, as CCTools reports), Temple, Rocky and Kora from their order books. A token's Canton price weighs each venue by the dollars it can trade within 1% of its own mid, and so does Canton Coin's, across every CC/USDCx pool and the CC/USDCx order books of Temple (since 14 Oct 2026; before, the pools alone) and Kora (since 23 Nov 2026). For an order book, liquidity is the dollars resting within 1% of mid. A 24h or 7d change needs a price from the last two hours; a market that stopped trading shows none.</p></div>
     <div><h4>Data</h4><p>Temple's API (account key), the Cantex, Tradecraft, OneSwap, Pool Party, Rocky, Kora and Ekiden public APIs, Canborsa's web app's public routes, DefiLlama for Canton's TVL, CoinGecko for outside prices and logos, Ekiden's index for gold and silver spot. Temple's volume comes from its own public settled-volume route.</p></div>
   </footer>
