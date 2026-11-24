@@ -210,9 +210,9 @@ def _finite(x, where: list):
 # they read carry one line for whoever runs them. A new field,
 # last in the file: nothing that reads the existing fields changes. Running records that the collector
 # reads back (desk, history, venue_history) and the dated reports are left alone.
-BOT_NOTICE = ("Running a bot on this API? Register it, free: https://cantonvenues.com/build/#bots. Registered bots "
-              "get first access to what we build for them next (faster updates, the archive since October, push "
-              "alerts) and 14 days' notice before a breaking change. This API stays open and key-free.")
+BOT_NOTICE = ("Running a bot on this API? Updates every minute, push alerts and the archive since 27 October are in "
+              "Pro: https://cantonvenues.com/pricing/. Register free for 14 days' notice before a breaking change: "
+              "https://cantonvenues.com/build/#register. This API stays open and key-free.")
 NOTICE_FILES = frozenset({"summary.json", "tokens.json", "execution.json", "premium.json", "scan.json", "pools.json",
                           "lp.json", "exit.json", "venues.json", "perps.json", "alerts.json", "spreads.json",
                           "quotecheck.json"})

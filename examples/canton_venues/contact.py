@@ -7,7 +7,8 @@ is the notification, so a failed send loses nothing.
 Two forms post here: the dashboard's contact form (a message) and the build page's
 "Register your app" (``kind: "register"``: the app, what it uses, what it wants next,
 whether it wants a listing and its own line for it). A listing goes up by hand (build_page.APPS), never
-straight from the form.
+straight from the form. The pricing page's request (``kind: "pricing"``) names a plan (pricing_page.PLANS),
+who asks and how to reach them.
 
     python contact.py --port 8098 --log /opt/canton-venues/contact.jsonl
 
@@ -31,7 +32,8 @@ log = logging.getLogger("contact")
 
 MAX_BODY = 16_000
 LIMITS = {"name": 120, "contact": 200, "message": 4000, "app": 120, "url": 300, "uses": 200, "line": 280,
-          "wants": 200}
+          "wants": 200, "plan": 20}
+PLAN_NAMES = {"pro": "Pro, $199 a month", "partner": "Data partner, from $4,000 a month"}
 
 
 def clean(form: dict, key: str) -> str:
@@ -40,6 +42,14 @@ def clean(form: dict, key: str) -> str:
 
 def read_form(form: dict) -> tuple[dict | None, str]:
     """The entry to keep, or None and why not. A form without ``kind`` is the contact form."""
+    if form.get("kind") == "pricing":
+        entry = {"kind": "pricing", "plan": clean(form, "plan"), "app": clean(form, "app"),
+                 "contact": clean(form, "contact"), "message": clean(form, "message")}
+        if entry["plan"] not in PLAN_NAMES:
+            return None, "unknown plan"
+        if not entry["contact"] or len(entry["app"]) < 2:
+            return None, "name and contact are required"
+        return entry, ""
     if form.get("kind") == "register":
         entry = {"kind": "register", "app": clean(form, "app"), "url": clean(form, "url"),
                  "uses": clean(form, "uses"), "wants": clean(form, "wants"), "contact": clean(form, "contact"),
@@ -57,6 +67,12 @@ def read_form(form: dict) -> tuple[dict | None, str]:
 def notify_text(entry: dict) -> str:
     """The Telegram message for one entry, every field escaped for Telegram's HTML."""
     q = html.escape
+    if entry.get("kind") == "pricing":
+        return (f"<b>cantonvenues.com: pricing request</b>\n"
+                f"Plan: {q(PLAN_NAMES[entry['plan']])}\n"
+                f"From: {q(entry['app'])}\n"
+                f"Reply to: {q(entry['contact'])}\n\n"
+                f"{q(entry['message'] or '(nothing on what they need)')}")
     if entry.get("kind") == "register":
         listing = (f"yes, line: {q(entry['line'])}" if entry["line"] else "yes, no line") if entry["listed"] else "no"
         return (f"<b>cantonvenues.com: app registered</b>\n"

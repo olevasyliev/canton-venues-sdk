@@ -124,17 +124,20 @@ def test_registration_keeps_what_a_bot_wants_next_and_says_it_in_telegram():
         == contact.LIMITS["wants"]
 
 
-def test_bots_section_points_to_the_form_and_promises_only_what_exists():
+def test_bots_section_points_to_pro_and_promises_only_what_exists():
     page = bp.page(T)
     bots = page.split('<section class="block" id="bots">', 1)[1].split("</section>", 1)[0]
-    # the archive's start dates are the record's real first days, and the open API stays key-free
-    assert "since 27 October" in bots and "since 8 October" in bots and "no key" in bots
+    # the archive starts on the market record's real first day; the hourly best-execution record
+    # (from 8 October) is promised as an open dataset (#778), so it is never part of Pro
+    assert "since 27 October" in bots and "since 8 October" not in bots and "no key" in bots
+    assert 'href="/pricing/"' in bots and "$199 a month" in bots
     assert 'name="want" value="faster updates"' in page and "wants: wants.join" in page
 
 
-def test_the_bot_notice_links_to_the_bots_section_on_the_build_page():
+def test_the_bot_notice_links_to_pricing_and_to_the_free_registration():
     import collect
-    assert "https://cantonvenues.com/build/#bots" in collect.BOT_NOTICE and 'id="bots"' in bp.page(T)
+    assert "https://cantonvenues.com/pricing/" in collect.BOT_NOTICE
+    assert "https://cantonvenues.com/build/#register" in collect.BOT_NOTICE and 'id="register"' in bp.page(T)
     assert "—" not in collect.BOT_NOTICE
     index = json.loads((Path(bp.__file__).parent / "site" / "api-index.json").read_text())
-    assert "https://cantonvenues.com/build/#bots" in index["bots"]
+    assert "https://cantonvenues.com/pricing/" in index["bots"] and "https://cantonvenues.com/build/#register" in index["bots"]

@@ -2,7 +2,7 @@
   "name": "Canton Venues open API",
   "about": "Live, read-only market data for Canton Network trading venues. No key, cross-origin enabled, refreshed every five minutes; every snapshot file carries t, the unix time of its snapshot (alerts and desk are running records; history's t is the list of its sample times).",
   "base": "https://cantonvenues.com/api/v1/",
-  "bots": "Running a bot on this API? Register it, free: https://cantonvenues.com/build/#bots. Registered bots get first access to what we build for them next (faster updates, the archive since October, push alerts). The snapshot files carry the same line in notice, their last field.",
+  "bots": "Running a bot on this API? Updates every minute, push alerts and the archive since 27 October are in Pro: https://cantonvenues.com/pricing/. Register free for 14 days' notice before a breaking change: https://cantonvenues.com/build/#register. The snapshot files carry the same line in notice, their last field.",
   "endpoints": [
     {
       "name": "summary",

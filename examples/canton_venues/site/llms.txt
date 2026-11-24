@@ -63,6 +63,7 @@ Using the data in an app or an agent? https://cantonvenues.com/build/ has one ca
 
 - [Dashboard](https://cantonvenues.com/): tokens, best execution, premiums, spreads, pools, perps, API
 - [Build](https://cantonvenues.com/build/): one call to start with per kind of app, and app registration
+- [Pricing](https://cantonvenues.com/pricing/): the open API is free; Pro ($199 a month: updates every minute, push alerts, the archive since 27 October 2026) and Data partner (from $4,000 a month: delivery in your format, written methodology, incident notices)
 - [Venues](https://cantonvenues.com/venues/): one page per venue with its strongest facts and a share card
 - [Weekly](https://cantonvenues.com/weekly/): the last seven days of Canton DEX volume by venue
 - [Telegram channel](https://t.me/cantonvenues): a weekday post and loud alerts

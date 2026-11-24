@@ -6,9 +6,8 @@ The page changes only when this file does, so deploy writes it once:
     python build_page.py --out /var/www/canton-venues
 
 Registering is optional and changes nothing in the API: no key, the same files for everyone. It gets a
-team notice before a breaking change, direct help and, if it wants one, a listing. Bots that register say
-what they want next (faster updates, the archive, push alerts) and get it first; the API files point
-them here (collect.BOT_NOTICE). The form posts to
+team notice before a breaking change, direct help and, if it wants one, a listing. Bots are pointed at Pro
+on the pricing page (pricing_page.py), here and in the API files (collect.BOT_NOTICE). The form posts to
 contact.py (``kind: "register"``); a listing goes up by hand, in ``APPS``, after a look at the app.
 """
 
@@ -209,13 +208,13 @@ def page(t: int) -> str:
 
   <section class="block" id="bots">
     <h2>Running a bot on this API?</h2>
-    <p class="sub">Some of you poll these files every few minutes. We would like to know you and build what you need next. Register below and say what you want; registered bots get it first.</p>
+    <p class="sub">Some of you poll these files every few minutes. <a href="/pricing/">Pro</a> adds what bots ask for, $199 a month:</p>
     <ul class="regwhy">
-      <li><b>Faster updates</b> than the public five-minute snapshot.</li>
-      <li><b>The archive:</b> every five-minute reading since 27 October and the hourly best-execution record since 8 October.</li>
-      <li><b>Push alerts</b> for the moves you watch, instead of polling.</li>
+      <li><b>Updates every minute</b> instead of the five-minute snapshot.</li>
+      <li><b>Push alerts</b> by webhook or Telegram, instead of polling.</li>
+      <li><b>The archive:</b> every five-minute reading since 27 October.</li>
     </ul>
-    <p class="fine">The open API does not change: the same files for everyone, no key.</p>
+    <p class="fine">The open API does not change: the same files for everyone, no key. Registering below stays free.</p>
   </section>
 
   <section class="block" id="register">
