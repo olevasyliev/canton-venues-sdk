@@ -53,7 +53,10 @@ SITE = "https://cantonvenues.com"
 _cache: dict[str, tuple[float, object]] = {}
 
 # every tool only reads data the collector already published: nothing is executed, stored or sent
-READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
+def read_only(title: str) -> ToolAnnotations:
+    """The tool's annotations, its title included: the Claude directory reads the title from here."""
+    return ToolAnnotations(title=title, read_only_hint=True, destructive_hint=False, idempotent_hint=True,
+                           open_world_hint=False)
 Symbol = Annotated[str, Field(description="Token symbol as Canton DEXes name it, e.g. CC (Canton Coin), CBTC, USDCx; "
                                           "list_tokens() gives every symbol")]
 
@@ -145,7 +148,7 @@ server = MCPServer(
 )
 
 
-@server.tool(title="Canton DEX market overview", annotations=READ_ONLY)
+@server.tool(title="Canton DEX market overview", annotations=read_only("Canton DEX market overview"))
 def market_overview() -> dict:
     """Canton DEX market right now: CC price and CC's own 24h volume on each DEX (null where a venue
     publishes no volume), spot volume per venue we read, Canton's TVL for the day named, top movers, the
@@ -185,7 +188,7 @@ def market_overview() -> dict:
     }
 
 
-@server.tool(title="List Canton DEX tokens", annotations=READ_ONLY)
+@server.tool(title="List Canton DEX tokens", annotations=read_only("List Canton DEX tokens"))
 def list_tokens(
     sort_by: Annotated[Literal["liquidity", "volume", "change_24h", "change_7d", "premium"], Field(
         description="Order of the list, largest first: liquidity (USD), volume (24h USD), change_24h, change_7d, "
@@ -208,7 +211,7 @@ def list_tokens(
     return {"as_of": load("tokens")["t"], "tokens": rows[:max(1, min(limit, 100))]}
 
 
-@server.tool(title="Token detail", annotations=READ_ONLY)
+@server.tool(title="Token detail", annotations=read_only("Token detail"))
 def token(symbol: Symbol) -> dict:
     """One token: price, changes, liquidity and volume, price on each venue, premium to its outside
     reference, its pools with fee APR, and hourly USD prices for the last 7 days."""
@@ -231,7 +234,7 @@ def token(symbol: Symbol) -> dict:
     }
 
 
-@server.tool(title="Quote a trade on Canton DEXes", annotations=READ_ONLY)
+@server.tool(title="Quote a trade on Canton DEXes", annotations=read_only("Quote a trade on Canton DEXes"))
 def quote(
     sell: Annotated[str, Field(description="Symbol of the token sold, e.g. CC")],
     buy: Annotated[str, Field(description="Symbol of the token bought, e.g. USDCx")],
@@ -303,7 +306,7 @@ def quote(
             "network_fees": {"included": "after_network_fee, per swap", "per_trade": fee_table}}
 
 
-@server.tool(title="Canton premium to global prices", annotations=READ_ONLY)
+@server.tool(title="Canton premium to global prices", annotations=read_only("Canton premium to global prices"))
 def premiums(
     kind: Annotated[Literal["all", "reference", "peg"], Field(
         description="reference: tokens priced against an outside market (CBTC vs BTC, cETH vs ETH, eXAU, eXAG, CC); "
@@ -320,7 +323,7 @@ def premiums(
         for a in rows]}
 
 
-@server.tool(title="Cross-venue spreads", annotations=READ_ONLY)
+@server.tool(title="Cross-venue spreads", annotations=read_only("Cross-venue spreads"))
 def spreads(limit: Annotated[int, Field(description="How many routes to return, best first, 1 to 50")] = 10) -> dict:
     """Buy-on-one-venue, sell-on-the-other round trips at their best size, after each venue's network
     fee: `cost_cc` per route, `swap_cost_cc` per venue (Cantex and OneSwap their own quotes, checked
@@ -330,7 +333,7 @@ def spreads(limit: Annotated[int, Field(description="How many routes to return, 
     return {"as_of": s["t"], "swap_cost_cc": s.get("swap_cost_cc"), "routes": s["routes"][:max(1, min(limit, 50))]}
 
 
-@server.tool(title="Recent alerts", annotations=READ_ONLY)
+@server.tool(title="Recent alerts", annotations=read_only("Recent alerts"))
 def alerts(limit: Annotated[int, Field(description="How many of the latest alerts to return, 1 to 300")] = 20) -> dict:
     """Alerts fired on Canton DEXes: stablecoin peg breaks, premiums over 1%, hourly moves over 5%,
     and spreads that clear their costs. Newest last."""
@@ -338,7 +341,7 @@ def alerts(limit: Annotated[int, Field(description="How many of the latest alert
     return {"alerts": feed[-max(1, min(limit, 300)):], "channel": "https://t.me/cantonvenues"}
 
 
-@server.tool(title="Liquidity pools", annotations=READ_ONLY)
+@server.tool(title="Liquidity pools", annotations=read_only("Liquidity pools"))
 def pools(
     sort_by: Annotated[Literal["tvl", "volume", "apr"], Field(
         description="Order of the list, largest first: tvl (USD), volume (24h USD) or apr (LP fee APR)")] = "tvl",
@@ -355,7 +358,7 @@ def pools(
     return {"as_of": load("lp")["t"], "pools": rows[:max(1, min(limit, 60))]}
 
 
-@server.tool(title="Canton venues and coverage", annotations=READ_ONLY)
+@server.tool(title="Canton venues and coverage", annotations=read_only("Canton venues and coverage"))
 def venues() -> dict:
     """Every Canton trading venue we know of: type, 24h volume, and whether we price it live,
     see its volume only, or cannot read it (key needed, testnet, no public API). Also the share of
@@ -364,7 +367,7 @@ def venues() -> dict:
     return {k: v for k, v in load("venues").items() if k != "notice"}
 
 
-@server.tool(title="Perpetual futures", annotations=READ_ONLY)
+@server.tool(title="Perpetual futures", annotations=read_only("Perpetual futures"))
 def perps(base: Annotated[str | None, Field(
         description="Only markets on this asset, e.g. BTC, ETH or CC; leave out for every market")] = None) -> dict:
     """Perp markets on Rocky, Ekiden and Canborsa: price, basis to the outside spot price, funding,
@@ -374,7 +377,7 @@ def perps(base: Annotated[str | None, Field(
     return {"as_of": d["t"], "markets": rows}
 
 
-@server.tool(title="Exit cost: what selling a token for dollars nets", annotations=READ_ONLY)
+@server.tool(title="Exit cost: what selling a token for dollars nets", annotations=read_only("Exit cost: what selling a token for dollars nets"))
 def exit_cost(
     symbol: Symbol,
     amount_usd: Annotated[float | None, Field(
@@ -405,7 +408,7 @@ def exit_cost(
     return out
 
 
-@server.tool(title="Check a trade against every Canton venue at that time", annotations=READ_ONLY)
+@server.tool(title="Check a trade against every Canton venue at that time", annotations=read_only("Check a trade against every Canton venue at that time"))
 def check_trade(
     sell: Annotated[str, Field(description="Symbol of the token sold, e.g. CC")],
     buy: Annotated[str, Field(description="Symbol of the token bought, e.g. USDCx")],

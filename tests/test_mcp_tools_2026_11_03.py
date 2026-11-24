@@ -27,7 +27,7 @@ def test_the_registry_listing_carries_the_sites_icon_and_the_servers_version() -
 def test_every_tool_is_marked_read_only_in_the_source() -> None:
     src = (SITE / "mcp_server.py").read_text()
     tools = re.findall(r"@server\.tool\((.*)\)", src)
-    assert len(tools) == 12 and all("annotations=READ_ONLY" in t for t in tools)
+    assert len(tools) == 12 and all("annotations=read_only(" in t for t in tools)
 
 
 @pytest.fixture(scope="module")
@@ -44,6 +44,8 @@ def test_every_tool_and_argument_is_described(mcp_server) -> None:
     for t in tools:
         a = t.annotations
         assert a.read_only_hint is True and a.destructive_hint is False, t.name
+        # the Claude directory reads a tool's name for its listing from annotations.title (24.11)
+        assert a.title and a.title == t.title, t.name
         props = t.input_schema.get("properties", {})
         assert all(p.get("description") for p in props.values()), (t.name, props)
     by = {t.name: t.input_schema["properties"] for t in tools}
