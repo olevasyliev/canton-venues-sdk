@@ -29,6 +29,8 @@ ssh "$SERVER" "
   install -D -m 644 current/examples/canton_venues/site/demo/chatgpt.mp4 /var/www/canton-venues/demo/chatgpt.mp4
   # the MCP registry's proof that we hold cantonvenues.com (public key only; the private half is not on the box)
   install -D -m 644 current/examples/canton_venues/site/.well-known/mcp-registry-auth /var/www/canton-venues/.well-known/mcp-registry-auth
+  # OpenAI's domain check for the ChatGPT plugin (a public token, not a secret)
+  install -D -m 644 current/examples/canton_venues/site/.well-known/openai-apps-challenge /var/www/canton-venues/.well-known/openai-apps-challenge
   # the build page changes only with the code: written once per deploy (build_page.py)
   (cd current/examples/canton_venues && /opt/canton-venues/.venv/bin/python build_page.py --out /var/www/canton-venues)
   (cd current/examples/canton_venues && /opt/canton-venues/.venv/bin/python pricing_page.py --out /var/www/canton-venues)
