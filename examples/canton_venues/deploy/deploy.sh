@@ -25,6 +25,8 @@ ssh "$SERVER" "
   install -m 644 current/examples/canton_venues/site/index.html current/examples/canton_venues/site/*.png \
     current/examples/canton_venues/site/llms.txt current/examples/canton_venues/site/robots.txt /var/www/canton-venues/
   install -m 644 current/examples/canton_venues/site/api-index.json /var/www/canton-venues/api/v1/index.json
+  # the ChatGPT plugin review's demo recording (chatgpt-plugin/plugin.json review.demo_recording_url)
+  install -D -m 644 current/examples/canton_venues/site/demo/chatgpt.mp4 /var/www/canton-venues/demo/chatgpt.mp4
   # the MCP registry's proof that we hold cantonvenues.com (public key only; the private half is not on the box)
   install -D -m 644 current/examples/canton_venues/site/.well-known/mcp-registry-auth /var/www/canton-venues/.well-known/mcp-registry-auth
   # the build page changes only with the code: written once per deploy (build_page.py)
