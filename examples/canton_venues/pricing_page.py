@@ -32,10 +32,10 @@ TIERS = [
      "items": ["JSON API, every five minutes", "No key, no sign-up", "MCP server and open‑source SDK",
                "Quotes and trade checks at any size", "Eight days of history"]},
     {"id": "pro", "name": "Pro", "from": False, "price": "$199", "per": "a month",
-     "desc": "For bots and traders that poll the API.",
+     "desc": "For research and backtests on Canton market history.",
      "cta": ("primary", "#request", "Request Pro", "pro"),
      "plus": "Everything in Open, plus",
-     "items": ["Updates every minute", "Push alerts by webhook or Telegram", "Archive since 27 October 2026",
+     "items": ["Archive since 27 October 2026", "Updates every minute", "Push alerts by webhook or Telegram",
                "Higher rate limits"]},
     {"id": "partner", "name": "Data partner", "from": True, "price": "$3,999", "per": "a month",
      "desc": "For data companies, oracles and desks.",
@@ -177,7 +177,7 @@ def page(t: int) -> str:
     </form>
   </section>"""
     html = _shell("Pricing: Canton market data, free and paid | Canton Venues",
-                  "The open Canton Venues API stays free. Pro: updates every minute, push alerts and the archive, "
+                  "The open Canton Venues API stays free. Pro: the archive, updates every minute and push alerts, "
                   "$199 a month. Data partner: delivery in your format with a methodology and incident notices, "
                   "from $3,999 a month.",
                   f"{SITE}/pricing/", None, body, t, FORM_JS)

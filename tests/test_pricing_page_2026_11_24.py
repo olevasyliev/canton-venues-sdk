@@ -123,3 +123,12 @@ def test_a_pricing_request_lands_in_the_record_and_a_bad_one_does_not(server):
     assert _post(srv, {"kind": "pricing", "plan": "pro", "app": "Bot", "contact": "@b", "website": "x"}) == 200  # honeypot
     rows = [json.loads(x) for x in log.read_text().splitlines()]
     assert [(r["kind"], r["plan"]) for r in rows] == [("pricing", "pro")]
+
+
+def test_pro_is_pitched_to_research_with_the_archive_first():
+    # F 25.11: "for bots" was weak (real bots read venues directly); Pro's uncopyable part is the archive
+    pro = next(t for t in pp.TIERS if t["id"] == "pro")
+    assert pro["desc"] == "For research and backtests on Canton market history."
+    assert pro["items"][0].startswith("Archive since 27")
+    html = pp.page(T)
+    assert "For research and backtests" in html and "For bots" not in html
