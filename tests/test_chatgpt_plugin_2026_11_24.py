@@ -27,6 +27,9 @@ def test_listing_fits_the_directory_limits():
     assert len(d["keywords"]) <= 25
     for key in ("websiteURL", "supportURL", "privacyPolicyURL", "termsOfServiceURL"):
         assert i[key].startswith("https://cantonvenues.com"), key
+    # the deploy installs this file (deploy.sh); the review rejects a package without a recording
+    assert d["extensions"]["com.openai"]["review"]["demo_recording_url"] == "https://cantonvenues.com/demo/chatgpt.mp4"
+    assert (PKG.parent / "site" / "demo" / "chatgpt.mp4").stat().st_size > 100_000
 
 
 def test_icons_exist_and_are_square():

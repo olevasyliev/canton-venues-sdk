@@ -42,6 +42,7 @@
         "logo": "./assets/logo.png"
       },
       "review": {
+        "demo_recording_url": "https://cantonvenues.com/demo/chatgpt.mp4",
         "test_cases": {
           "positive": [
             {
