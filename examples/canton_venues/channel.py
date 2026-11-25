@@ -389,7 +389,7 @@ def main() -> None:
     import os
     import time
 
-    import httpx
+    import tgapi
 
     ap = argparse.ArgumentParser(description="Send one of each channel post to the founder's chat.")
     ap.add_argument("--api", type=Path, required=True)
@@ -402,14 +402,14 @@ def main() -> None:
         raise SystemExit("TELEGRAM_BOT_TOKEN and CONTACT_CHAT_ID are needed")
     for post in preview(args.api, args.out, state, int(time.time())):
         body = f"[preview: {post.kind}]\n\n{post.html}"
-        # the URL carries the bot token: never print it or the response
+        # over IPv4 (tgapi); the request carries the bot token: print only the status
         if post.photo:
-            resp = httpx.post(f"https://api.telegram.org/bot{token}/sendPhoto", data={
-                "chat_id": chat, "photo": post.photo, "caption": body, "parse_mode": "HTML"}, timeout=30)
+            status = tgapi.call(token, "sendPhoto", {"chat_id": chat, "photo": post.photo, "caption": body,
+                                                     "parse_mode": "HTML"}, timeout=30)
         else:
-            resp = httpx.post(f"https://api.telegram.org/bot{token}/sendMessage", data={
-                "chat_id": chat, "text": body, "parse_mode": "HTML", "disable_web_page_preview": "true"}, timeout=30)
-        print(post.kind, resp.status_code)
+            status = tgapi.call(token, "sendMessage", {"chat_id": chat, "text": body, "parse_mode": "HTML",
+                                                       "disable_web_page_preview": "true"}, timeout=30)
+        print(post.kind, status)
 
 
 if __name__ == "__main__":

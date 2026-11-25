@@ -90,21 +90,13 @@ def test_one_message_when_a_direct_figure_is_off_by_more_than_the_limit(monkeypa
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t0k3n")
     monkeypatch.setenv("CONTACT_CHAT_ID", "42")
 
-    class Resp:
-        status = 200
+    def call(token, method, fields, timeout=15):
+        sent.append((token, method, fields))
+        return 200
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    def urlopen(url, data=None, timeout=None):
-        sent.append((url, data))
-        return Resp()
-
-    monkeypatch.setattr(cx.urllib.request, "urlopen", urlopen)
-    assert cx.send(text) and len(sent) == 1 and b"chat_id=42" in sent[0][1]
+    monkeypatch.setattr(cx.tgapi, "call", call)
+    assert cx.send(text) and sent == [("t0k3n", "sendMessage", {"chat_id": "42", "text": text, "parse_mode": "HTML",
+                                                               "disable_web_page_preview": "true"})]
 
 
 def test_pools_without_cc_count_in_the_reference_as_on_the_card():
@@ -198,7 +190,7 @@ def test_a_silent_source_is_told_once_and_a_venue_the_collector_reports_down_is_
 
 def test_no_secret_in_the_code_and_nothing_sent_without_one(monkeypatch):
     src = (Path(cx.__file__)).read_text()
-    assert "api.telegram.org/bot{token}" in src and "os.getenv(\"TELEGRAM_BOT_TOKEN\")" in src
+    assert 'tgapi.call(token, "sendMessage"' in src and "os.getenv(\"TELEGRAM_BOT_TOKEN\")" in src
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("CONTACT_CHAT_ID", raising=False)
     assert cx.send("x") is False

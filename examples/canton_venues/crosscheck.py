@@ -45,6 +45,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import tgapi
+
 log = logging.getLogger("crosscheck")
 
 GAP = 0.15             # venue API read directly, same figure: a gap over 15% is a fault on our side or theirs
@@ -377,12 +379,9 @@ def send(text: str) -> bool:
     if not (token and chat):
         log.warning("telegram: TELEGRAM_BOT_TOKEN or CONTACT_CHAT_ID not set; message not sent")
         return False
-    data = urllib.parse.urlencode({"chat_id": chat, "text": text, "parse_mode": "HTML",
-                                   "disable_web_page_preview": "true"}).encode()
-    try:
-        # the URL carries the bot token: never log it
-        with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data, timeout=15) as r:
-            return r.status == 200
+    try:  # over IPv4: the server's IPv6 route to Telegram stalls (tgapi)
+        return tgapi.call(token, "sendMessage", {"chat_id": chat, "text": text, "parse_mode": "HTML",
+                                                 "disable_web_page_preview": "true"}, timeout=15) == 200
     except Exception as exc:  # noqa: BLE001
         log.warning("telegram: %s", type(exc).__name__)
         return False

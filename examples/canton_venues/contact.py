@@ -23,10 +23,10 @@ import json
 import logging
 import os
 import time
-import urllib.parse
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import tgapi
 
 log = logging.getLogger("contact")
 
@@ -94,13 +94,11 @@ def notify(entry: dict) -> None:
     if not (token and chat):
         return
     text = notify_text(entry)
-    data = urllib.parse.urlencode({"chat_id": chat, "text": text, "parse_mode": "HTML",
-                                   "disable_web_page_preview": "true"}).encode()
-    try:
-        # the URL carries the bot token: never log it
-        with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data, timeout=10) as r:
-            if r.status != 200:
-                log.warning("telegram: HTTP %s", r.status)
+    try:  # over IPv4: the server's IPv6 route to Telegram stalls, which held the visitor ~10 s (tgapi)
+        status = tgapi.call(token, "sendMessage", {"chat_id": chat, "text": text, "parse_mode": "HTML",
+                                                   "disable_web_page_preview": "true"}, timeout=10)
+        if status != 200:
+            log.warning("telegram: HTTP %s", status)
     except Exception as exc:  # noqa: BLE001 - the message is already on disk
         log.warning("telegram: %s", type(exc).__name__)
 
