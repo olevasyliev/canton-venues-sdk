@@ -58,7 +58,7 @@ def test_execution_post_counts_wins_net_of_fees(tmp_path, monkeypatch):
                 ["USDCX", "buy", 10000, "tradecraft", 30.0, "tradecraft", 20.0],
                 ["CBTC:USD", "buy", 1000, "rocky", 1.0, "rocky", 1.0]]}) + "\n")
     post = channel.execution_post(channel.read_exec(tmp_path, now))
-    assert "<b>$1K</b>: Tradecraft 66% of the time, Cantex 33%" in post.html
+    assert "<b>$1K</b>: Tradecraft 67% of the time, Cantex 33%" in post.html
     assert "<b>$10K</b>: Tradecraft 100% of the time. The next venue returned a median 0.20% less" in post.html
     assert "$50K" not in post.html and "Rocky" not in post.html
     assert channel.execution_post([]) is None
@@ -77,3 +77,26 @@ def test_pegs_post_skips_thin_pools_and_names_the_worst_reading():
     assert "USDCx: within 0.5% of $1 100% of the time, furthest −1.20% held 30 min" in post.html
     assert "USX" not in post.html and "CC −0.40% vs global CC markets" in post.html
     assert channel.pegs_post({"t": ts[-10:], "premium": {}}, tokens, {}, now) is None
+
+
+def test_execution_post_never_reads_zero_for_a_winner_and_gives_a_new_venue_its_own_hours(monkeypatch):
+    # 25.11: Kora won 2 of 334 checks at $10K and the post said "Kora 0%"; added 23.11, its week share 5% at $1K
+    # was 24% over the hours it was compared
+    monkeypatch.setattr(channel, "EXEC_SINCE", 0)
+    now = int(MON.timestamp())
+    samples = []
+    for h in range(168):
+        t = now - 3600 * (167 - h)
+        new = h >= 130  # the last 38 hours
+        best_1k = "kora" if new and h % 2 else "temple"
+        best_10k = "kora" if h == 160 else "temple"
+        samples.append({"t": t, "venues": {"USDCX": ["temple", "tradecraft"] + (["kora"] if new else [])},
+                        "rows": [["USDCX", "buy", 1000, "temple", 5.0, best_1k, 5.0],
+                                 ["USDCX", "buy", 10000, "temple", 50.0, best_10k, 50.0]]})
+    post = channel.execution_post(samples)
+    assert "<b>$10K</b>: Temple 99% of the time, Kora under 1%." in post.html  # 167/168 and 1/168
+    assert "<b>$1K</b>: Temple 89% of the time, Kora 11%." in post.html  # 19 of 168
+    assert "Kora joined the comparison on " in post.html
+    assert "since then it got the best price at $1K 50% of the time, at $10K 3%." in post.html  # 19/38, 1/38
+    assert channel.share(0.0) == "0%" and channel.share(99.6) == "99%" and channel.share(100.0) == "100%"
+    assert channel.share(12.5) == "13%" and channel.share(0.6) == "under 1%"

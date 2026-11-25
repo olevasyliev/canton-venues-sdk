@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -75,7 +76,7 @@ def test_venue_post_reads_the_card_headline_as_a_sentence():
 def test_execution_post_tags_the_winners_and_puts_the_method_in_the_reply(monkeypatch):
     monkeypatch.setattr(channel, "EXEC_SINCE", 0)
     post = xpost.execution(_samples(int(WED.timestamp())), CHECKED)
-    assert "$1K: @TradecraftFi 66%, @temple_ny 33%" in post.text
+    assert "$1K: @TradecraftFi 67%, @temple_ny 33%" in post.text
     assert "$10K: @temple_ny 100%" in post.text and post.photo is None
     assert post.reply.startswith("The runner-up returned a median 0.10% less at $1K, 0.20% less at $10K.")
     assert "Rocky publishes no network fee, so its fee is assumed at 1.5 CC" in post.reply
@@ -148,3 +149,20 @@ def test_the_collector_sends_the_draft_to_the_founder_never_to_the_channel(tmp_p
     asyncio.run(c._x_morning([]))  # once a day
     assert len(sent) == 3
     assert json.loads((c.state / "x.json").read_text())["posts"][-1]["sent"] == "venue"
+
+
+def test_execution_post_puts_a_new_venue_under_the_rows_and_keeps_the_fee_note(monkeypatch):
+    monkeypatch.setattr(channel, "EXEC_SINCE", 0)
+    now = int(WED.timestamp())
+    samples = []
+    for h in range(168):
+        new = h >= 130
+        samples.append({"t": now - 3600 * (167 - h),
+                        "venues": {"USDCX": ["temple", "tradecraft"] + (["kora"] if new else [])},
+                        "rows": [["USDCX", "buy", 1000, "temple", 5.0, "kora" if new and h % 2 else "temple", 5.0],
+                                 ["USDCX", "buy", 10000, "temple", 50.0, "kora" if h == 160 else "temple", 50.0]]})
+    post = xpost.execution(samples, {"temple", "tradecraft", "kora"})
+    assert "@Kora_Protocol under 1%" in post.text and not re.search(r"(?<![0-9])0%", post.text)
+    assert post.text.endswith(" since " + datetime.fromtimestamp(now - 3600 * 37, UTC).strftime("%-d %b")
+                              + ": $1K 50%, $10K 3%")
+    assert xpost.x_len(post.text) <= 280 and xpost.x_len(post.reply) <= 280

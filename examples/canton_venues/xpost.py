@@ -119,16 +119,23 @@ def execution(samples: list[dict], checked: set[str] | None = None) -> XPost | N
         return None
     head = [f"Where a CC trade for USDCx got the best price on Canton, {st['span']}, after fees. "
             "Share of hours by size:", ""]
-    rows = [f"{money(size)}: " + ", ".join(f"{tag(v)} {pct}%" for v, pct in ranked[:3] if pct)
+    rows = [f"{money(size)}: " + ", ".join(f"{tag(v)} {channel.share(pct)}" for v, pct in ranked[:3])
             for size, ranked, _ in st["rows"]]
     text = _join(head, rows, [])
+    # a venue added this week: its share over its own hours, under the rows where it fits, else in the reply
+    joined = channel.joined_note(st, short=True)
+    if joined and _fits(with_joined := text + "\n" + "\n".join(joined)):
+        text, joined = with_joined, []
     edges = ", ".join(f"{edge:.2f}% less at {money(size)}" for size, _, edge in st["rows"])
     note = channel.assumed_fee_note(st).removeprefix("; ")
-    reply = (f"The runner-up returned a median {edges}. Buys and sells checked every hour, pool fees, price impact"
-             f" and network fees included{'. ' + note[0].upper() + note[1:] if note else ''}.\n\n"
-             f"Live: {SHORT_SITE}/#execution")
-    if not _fits(reply):
-        reply = f"The runner-up returned a median {edges}.\n\nLive: {SHORT_SITE}/#execution"
+    joined = "".join(f" {n}." for n in joined)
+    method = (" Buys and sells checked every hour, pool fees, price impact and network fees included"
+              f"{'. ' + note[0].upper() + note[1:] if note else ''}.")
+    live = f"\n\nLive: {SHORT_SITE}/#execution"
+    # the method and an assumed fee go first; a venue added this week goes in only where it fits
+    options = [f"The runner-up returned a median {edges}.{a}{b}{live}"
+               for a, b in ((joined, method), ("", method), (joined, ""), ("", ""))]
+    reply = next((r for r in options if _fits(r)), options[-1])
     return XPost("execution", text, reply) if _fits(text, reply) else None
 
 

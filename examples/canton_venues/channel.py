@@ -204,15 +204,59 @@ def execution_stats(samples: list[dict], checked: set[str] | None = None) -> dic
         c = wins.get(size)
         if c:
             n = sum(c.values())
-            rows.append((size, [(v, k * 100 // n) for v, k in c.most_common()],
+            rows.append((size, [(v, k * 100 / n) for v, k in c.most_common()],
                          statistics.median(edges[size]) / 100))
+    # a venue first compared a day or more into the window: the week's share understates it (Kora, added
+    # 23.11, showed 5% for the week and 24% over its own hours), so its share over those hours goes alongside
+    first: dict[str, int] = {}
+    for s in samples:
+        for v in (s.get("venues") or {}).get(EXEC_PAIR, []):
+            first.setdefault(v, s["t"])
+    joined = []
+    for v, t0 in sorted(first.items(), key=lambda x: x[1]):
+        if t0 - samples[0]["t"] < 86400 or (checked is not None and v not in checked):
+            continue
+        own = [s for s in samples if v in (s.get("venues") or {}).get(EXEC_PAIR, [])]
+        won = []
+        for size in EXEC_SIZES:
+            c = Counter(bn for s in own for pair, _side, sz, _b, _e, bn, _en in s["rows"]
+                        if pair == EXEC_PAIR and sz == size and bn and (checked is None or bn in checked))
+            if c[v]:
+                won.append((size, c[v] * 100 / sum(c.values())))
+        if won:
+            joined.append((v, t0, won))
     # the venues compared on the pair whose network fee is assumed, named in the closing line
     fees = samples[-1].get("network_fee") or {}
     compared = {v for s in samples for v in (s.get("venues") or {}).get(EXEC_PAIR, [])}
     assumed = sorted(NAMES.get(v, v) for v, f in fees.items()
                      if f.get("basis") == "assumed" and (v in compared or not compared))
     return {"span": _span(samples[-1]["t"] - samples[0]["t"]), "rows": rows, "assumed": assumed,
-            "fee": next((f for f in fees.values() if f.get("basis") == "assumed"), None) if assumed else None}
+            "fee": next((f for f in fees.values() if f.get("basis") == "assumed"), None) if assumed else None,
+            "joined": joined}
+
+
+def share(pct: float) -> str:
+    """A share of the checks, to the nearest percent, but a venue that won at least once never reads 0%
+    and one that lost at least once never reads 100% (25.11: "Kora 0%" for 2 wins in 334)."""
+    if 0 < pct < 1:
+        return "under 1%"
+    if 99 < pct < 100:
+        return "99%"
+    return f"{int(pct + 0.5)}%"
+
+
+def joined_note(st: dict, short: bool = False) -> list[str]:
+    """One sentence per venue added during the window, with its share over the hours it was compared."""
+    out = []
+    for v, t0, won in st.get("joined") or []:
+        day, name = datetime.fromtimestamp(t0, UTC).strftime("%-d %b"), NAMES.get(v, v)
+        if short:
+            out.append(f"{name} since {day}: " + ", ".join(f"{money(size)} {share(pct)}" for size, pct in won))
+        else:
+            parts = [f"at {money(size)} {share(pct)}" for size, pct in won]
+            parts[0] += " of the time"
+            out.append(f"{name} joined the comparison on {day}; since then it got the best price " + ", ".join(parts))
+    return out
 
 
 def assumed_fee_note(st: dict) -> str:
@@ -233,11 +277,13 @@ def execution_post(samples: list[dict], checked: set[str] | None = None) -> Post
     lines = [f"🏁 <b>Where a CC trade got the best price</b>, {st['span']}", ""]
     for size, ranked, edge in st["rows"]:
         top, pct = ranked[0]
-        line = f"<b>{money(size)}</b>: {NAMES.get(top, top)} {pct}% of the time"
+        line = f"<b>{money(size)}</b>: {NAMES.get(top, top)} {share(pct)} of the time"
         if len(ranked) > 1:
-            line += ", " + ", ".join(f"{NAMES.get(v, v)} {x}%" for v, x in ranked[1:3])
+            line += ", " + ", ".join(f"{NAMES.get(v, v)} {share(x)}" for v, x in ranked[1:3])
         line += f". The next venue returned a median {edge:.2f}% less"
         lines.append(line)
+    if st.get("joined"):
+        lines += [""] + [n + "." for n in joined_note(st)]
     note = ("Buys and sells of CC for USDCx, checked every hour. Pool fees, price impact and each venue's "
             "network fee included") + assumed_fee_note(st)
     lines += ["", note + ".", f'🔗 <a href="{SITE}/#execution">Live best execution</a>']
