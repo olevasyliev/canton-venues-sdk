@@ -118,18 +118,24 @@ def pools_usd(pools: list[tuple[str, float, str, float]], cc: float) -> float:
     reserve) with CC named "CC". As on the card: a CC pool is twice its CC side at ``cc``; a pool of
     two other tokens counts both sides when both are priced, twice the priced side when one is, nothing
     when neither is (USDCx and USDC.B at $1, any other token at its price in the venue's deepest pool
-    against CC or a dollar). The card has counted pools without CC since 2026-10-14 (d578bdf): checked
+    against a token already priced, working outwards from CC and the dollars). The card has counted pools without CC since 2026-10-14 (d578bdf): checked
     against CC pools alone, it read OneSwap +33% and Pool Party +62% on 2026-10-15."""
     price: dict[str, float] = {"CC": cc} | {d: 1.0 for d in DOLLARS}
-    known = dict(price)
-    depth: dict[str, float] = {}
-    for a, ra, b, rb in pools:
-        for tok, rt, other, ro in ((a, ra, b, rb), (b, rb, a, ra)):
-            if tok in known or other not in known or rt <= 0 or ro <= 0:
-                continue
-            usd = ro * known[other]
-            if usd > depth.get(tok, 0):  # the deepest such pool sets the price
-                price[tok], depth[tok] = usd / rt, usd
+    # In rounds, nearest to CC first: a token is priced by its deepest pool against tokens priced in
+    # an earlier round, then prices its own neighbours in the next. One round only (before 2026-11-28)
+    # left OneSwap's tf-usdt unpriced (its priced neighbour is HECTO), and with it $136K of pools.
+    while True:
+        known = dict(price)
+        depth: dict[str, float] = {}
+        for a, ra, b, rb in pools:
+            for tok, rt, other, ro in ((a, ra, b, rb), (b, rb, a, ra)):
+                if tok in known or other not in known or rt <= 0 or ro <= 0:
+                    continue
+                usd = ro * known[other]
+                if usd > depth.get(tok, 0):  # the deepest such pool sets the price
+                    price[tok], depth[tok] = usd / rt, usd
+        if len(price) == len(known):
+            break
     total = 0.0
     for a, ra, b, rb in pools:
         if "CC" in (a, b):

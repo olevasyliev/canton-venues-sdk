@@ -125,6 +125,31 @@ def test_pools_without_cc_count_in_the_reference_as_on_the_card():
     assert abs(ref["pool-party"] - 228_018) < 1 and abs(ref["oneswap"] - 294_000) < 1
 
 
+def test_a_token_priced_two_pools_away_from_cc_still_values_its_pools():
+    # 2026-11-21..28: OneSwap opened cSOL, eXAG and cETH pools against tf-usdt, whose only priced
+    # neighbour is HECTO (itself priced through CC). The reference priced tokens one pool from CC
+    # only, counted those pools as nothing, and told the founder daily that a right card was +45%.
+    base = fake_get()
+
+    def get(url, params=None):
+        out = base(url, params)
+        if url == cx.ONESWAP:
+            cc = {"symbol": "CC", "id": "Amulet", "admin": "DSO::1220"}
+            tok = lambda s: {"symbol": s, "id": s, "admin": s.lower()}  # noqa: E731
+            out += [{"assetX": cc, "assetY": tok("HECTO"), "reserveX": str(20_000 / CC), "reserveY": "200000"},
+                    {"assetX": tok("HECTO"), "assetY": tok("TUSDT"), "reserveX": "180000", "reserveY": "18000"},
+                    {"assetX": tok("cSOL"), "assetY": tok("TUSDT"), "reserveX": "300", "reserveY": "22000"},
+                    {"assetX": tok("AAA"), "assetY": tok("BBB"), "reserveX": "5", "reserveY": "5"}]  # no path: nothing
+        return out
+
+    # CC/HECTO $40K; HECTO/TUSDT $18K + $18K; cSOL/TUSDT twice its $22K of TUSDT
+    pub = published(oneswap={"tvl": 234_000.0 + 40_000 + 36_000 + 44_000})
+    text, rows = cx.run(pub, get, NOW)
+    assert text is None, text
+    ref = {r["venue"]: r["theirs"] for r in rows if r["figure"] == "tvl" and "DefiLlama" not in r["source"]}
+    assert abs(ref["oneswap"] - 354_000) < 1
+
+
 def test_defillama_gaps_use_their_own_looser_limit():
     # Rocky's spot volume has no keyless source of its own: DefiLlama is its only check
     # 20% under DefiLlama's: within LLAMA_GAP, silent
